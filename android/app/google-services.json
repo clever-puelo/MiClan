@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "584118508324",
+    "project_id": "miclan-6dd12",
+    "storage_bucket": "miclan-6dd12.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:584118508324:android:9412ee86e3ee4f4d09b1b1",
+        "android_client_info": {
+          "package_name": "com.agiletask.miclan"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCjg6daP96jsPjQqJa8-hpMFf59Ug13zYA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

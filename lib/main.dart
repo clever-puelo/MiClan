@@ -1,0 +1,94 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'firebase_options.dart';
+import 'providers/app_providers.dart';
+import 'screens/auth_screen.dart';
+import 'screens/onboarding_screen.dart';
+import 'screens/home_screen.dart';
+import 'screens/chat_screen.dart';
+import 'screens/settings_screen.dart';
+
+@pragma('vm:entry-point')
+Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+  runApp(const ProviderScope(child: MiClanApp()));
+}
+
+class MiClanApp extends ConsumerStatefulWidget {
+  const MiClanApp({super.key});
+  @override
+  ConsumerState<MiClanApp> createState() => _MiClanAppState();
+}
+
+class _MiClanAppState extends ConsumerState<MiClanApp> {
+  late final GoRouter _router;
+
+  @override
+  void initState() {
+    super.initState();
+    _setupFCM();
+
+    _router = GoRouter(
+      initialLocation: '/',
+      redirect: (context, state) {
+        final user = ref.read(currentUserProvider).value;
+        final isLoggedIn = user != null;
+        final hasGroup = user?.groupId != null;
+        final path = state.matchedLocation;
+
+        if (!isLoggedIn && path != '/login') return '/login';
+        if (isLoggedIn && !hasGroup && path != '/onboarding') return '/onboarding';
+        if (isLoggedIn && hasGroup && (path == '/login' || path == '/onboarding' || path == '/')) return '/home';
+        return null;
+      },
+      routes: [
+        GoRoute(path: '/', redirect: (_, __) => '/home'),
+        GoRoute(path: '/login', builder: (_, __) => const AuthScreen()),
+        GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingScreen()),
+        GoRoute(path: '/home', builder: (_, __) => const HomeScreen()),
+        GoRoute(path: '/chat', builder: (_, __) => const ChatScreen()),
+        GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
+      ],
+    );
+  }
+
+  Future<void> _setupFCM() async {
+    final messaging = FirebaseMessaging.instance;
+    await messaging.requestPermission(alert: true, badge: true, sound: true);
+    final token = await messaging.getToken();
+    final user = ref.read(currentUserProvider).value;
+    if (token != null && user != null) {
+      await ref.read(authServiceProvider).updateFcmToken(user.uid, token);
+    }
+    messaging.onTokenRefresh.listen((newToken) async {
+      final u = ref.read(currentUserProvider).value;
+      if (u != null) await ref.read(authServiceProvider).updateFcmToken(u.uid, newToken);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.listen(currentUserProvider, (_, __) => _router.refresh());
+
+    return MaterialApp.router(
+      title: 'MiClan',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1976D2)),
+        textTheme: GoogleFonts.robotoTextTheme(),
+        useMaterial3: true,
+      ),
+      routerConfig: _router,
+    );
+  }
+}
