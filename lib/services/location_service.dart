@@ -22,9 +22,18 @@ class LocationService {
 
   Future<void> startTracking(String uid, String groupId) async {
     if (!await checkPermissions()) return;
+
+    // Subir ubicacion actual inmediatamente
+    try {
+      final currentPos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      await _db.insertLocation(groupId, currentPos.latitude, currentPos.longitude);
+      await _firestore.updateLocation(uid, groupId, currentPos.latitude, currentPos.longitude);
+      _lastPosition = currentPos;
+    } catch (_) {}
+
     const locationSettings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10);
     Geolocator.getPositionStream(locationSettings: locationSettings).listen((position) async {
-      await _db.insertLocation(position.latitude, position.longitude);
+      await _db.insertLocation(groupId, position.latitude, position.longitude);
       final prefs = await SharedPreferences.getInstance();
       final batterySaver = prefs.getBool('battery_saver') ?? false;
       final minDistance = batterySaver ? 200.0 : 50.0;
@@ -32,7 +41,10 @@ class LocationService {
       if (_lastPosition == null) {
         shouldUpload = true;
       } else {
-        final distance = Geolocator.distanceBetween(_lastPosition!.latitude, _lastPosition!.longitude, position.latitude, position.longitude);
+        final distance = Geolocator.distanceBetween(
+          _lastPosition!.latitude, _lastPosition!.longitude,
+          position.latitude, position.longitude,
+        );
         shouldUpload = distance > minDistance;
       }
       if (shouldUpload) {

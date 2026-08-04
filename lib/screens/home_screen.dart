@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:go_router/go_router.dart';
+import 'package:geolocator/geolocator.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
 
@@ -16,30 +17,87 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final MapController _mapController = MapController();
   LatLng? _myLocation;
   bool _mapReady = false;
+  bool _locationChecked = false;
+  String _selectedReceiver = 'all';
 
   @override
   void initState() {
     super.initState();
-    _initLocation();
+    _checkLocationAndInit();
+  }
+
+  Future<void> _checkLocationAndInit() async {
+    // Pedir permisos explicitamente
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled && mounted) {
+      _showLocationDialog('GPS apagado', 'Activa la ubicacion para usar el mapa.');
+      setState(() => _locationChecked = true);
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied && mounted) {
+        _showLocationDialog('Permiso denegado', 'La app necesita acceso a tu ubicacion para mostrarte en el mapa.');
+        setState(() => _locationChecked = true);
+        return;
+      }
+    }
+    if (permission == LocationPermission.deniedForever && mounted) {
+      _showLocationDialog('Permiso bloqueado', 'Ve a configuracion y habilita la ubicacion para MiClan.');
+      setState(() => _locationChecked = true);
+      return;
+    }
+
+    await _initLocation();
+    setState(() => _locationChecked = true);
   }
 
   Future<void> _initLocation() async {
-    final pos = await ref.read(locationServiceProvider).getCurrentPosition();
-    if (pos != null && mounted) {
+    try {
+      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      if (!mounted) return;
+
       setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
-      if (_mapReady) {
+
+      // Mover mapa si ya esta listo
+      if (_mapReady && _myLocation != null) {
         _mapController.move(_myLocation!, 16);
       }
+
       final user = ref.read(currentUserProvider).valueOrNull;
       if (user?.groupId != null) {
         ref.read(locationServiceProvider).startTracking(user!.uid, user.groupId!);
       }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error GPS: $e'), backgroundColor: Colors.red),
+        );
+      }
     }
+  }
+
+  void _showLocationDialog(String title, String content) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        content: Text(content, style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+        ],
+      ),
+    );
   }
 
   void _centerOnMe() {
     if (_myLocation != null) {
       _mapController.move(_myLocation!, 17);
+    } else {
+      _checkLocationAndInit();
     }
   }
 
@@ -48,19 +106,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final userAsync = ref.watch(currentUserProvider);
     final membersAsync = ref.watch(groupMembersProvider);
     final groupAsync = ref.watch(currentGroupProvider);
+    final activeSOS = ref.watch(activeSOSProvider).valueOrNull;
+
+    if (!_locationChecked) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0F172A),
+        body: Center(child: CircularProgressIndicator(color: Colors.blue)),
+      );
+    }
 
     return userAsync.when(
-      data: (user) => membersAsync.when(
-        data: (members) => groupAsync.when(
-          data: (group) => _buildUI(context, user!, members, group),
+      data: (user) {
+        if (user == null) {
+          return _errorScaffold('No hay usuario activo');
+        }
+        return membersAsync.when(
+          data: (members) => groupAsync.when(
+            data: (group) => _buildUI(context, user, members, group, activeSOS),
+            loading: () => _loadingScaffold(),
+            error: (e, _) => _errorScaffold('Error grupo: $e'),
+          ),
           loading: () => _loadingScaffold(),
-          error: (e, _) => _errorScaffold('Error grupo: \$e'),
-        ),
-        loading: () => _loadingScaffold(),
-        error: (e, _) => _errorScaffold('Error miembros: \$e'),
-      ),
+          error: (e, _) => _errorScaffold('Error miembros: $e'),
+        );
+      },
       loading: () => _loadingScaffold(),
-      error: (e, _) => _errorScaffold('Error usuario: \$e'),
+      error: (e, _) => _errorScaffold('Error usuario: $e'),
     );
   }
 
@@ -74,8 +145,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         body: Center(child: Text(msg, style: const TextStyle(color: Colors.white70))),
       );
 
-  Widget _buildUI(BuildContext context, AppUser user, List<AppUser> members, AppGroup? group) {
-    final isCentral = user.currentRole == 'central';
+  Widget _buildUI(BuildContext context, AppUser user, List<AppUser> members, AppGroup? group, AppAlert? activeSOS) {
+    final isAdmin = user.uid == group?.ownerId;
     final bottomPad = MediaQuery.of(context).padding.bottom;
 
     return Scaffold(
@@ -85,129 +156,170 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: Text(
-          '\${user.displayName} - \${group?.name ?? "MiClan"}',
+          '${user.displayName} - ${group?.name ?? "MiClan"}',
           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
         actions: [
-          _glassButton(icon: Icons.chat, onTap: () => context.push('/chat')),
+          _glassButton(icon: Icons.logout, onTap: _logout),
           _glassButton(icon: Icons.settings, onTap: () => context.push('/settings')),
+          _glassButton(icon: Icons.chat, onTap: () => context.push('/chat')),
+          _glassButton(icon: Icons.people, onTap: () => _showMembersSheet(context, members, isAdmin, group, user)),
         ],
       ),
       body: Stack(
         children: [
-          // Mapa
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: _myLocation ?? const LatLng(-34.6037, -58.3816),
-              initialZoom: _myLocation != null ? 16.0 : 12.0,
-              onMapReady: () {
-                _mapReady = true;
-                if (_myLocation != null) _mapController.move(_myLocation!, 16);
-              },
-            ),
-            children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.agiletask.miclan',
+          Positioned.fill(
+            top: MediaQuery.of(context).padding.top + 60,
+            bottom: 220 + bottomPad,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white.withOpacity(0.1)),
               ),
-              _buildMarkersLayer(members, user),
-            ],
+              clipBehavior: Clip.antiAlias,
+              child: FlutterMap(
+                mapController: _mapController,
+                options: MapOptions(
+                  initialCenter: _myLocation ?? const LatLng(-34.6037, -58.3816),
+                  initialZoom: _myLocation != null ? 16.0 : 12.0,
+                  onMapReady: () {
+                    _mapReady = true;
+                    if (_myLocation != null) {
+                      _mapController.move(_myLocation!, 16);
+                    }
+                  },
+                ),
+                children: [
+                  TileLayer(
+                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName: 'com.agiletask.miclan',
+                  ),
+                  _buildMarkersLayer(members, user),
+                ],
+              ),
+            ),
           ),
 
-          // SOS ARRIBA - separado, grande
           Positioned(
             top: MediaQuery.of(context).padding.top + 60,
             left: 16,
             right: 16,
-            child: _sosButton(user),
+            child: _sosButton(user, activeSOS),
           ),
 
-          // Botón centrador (mi ubicación)
           Positioned(
-            right: 16,
-            bottom: isCentral ? 24 : 180 + bottomPad,
+            right: 24,
+            bottom: 240 + bottomPad,
             child: _glassFAB(
               icon: Icons.my_location,
-              color: Colors.blue.shade400,
+              color: _myLocation != null ? Colors.blue.shade400 : Colors.grey,
               onTap: _centerOnMe,
             ),
           ),
 
-          // Botones de CENTRAL (arriba a la izquierda)
-          if (isCentral)
-            Positioned(
-              left: 16,
-              bottom: 24,
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12 + bottomPad,
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                color: Colors.black.withOpacity(0.5),
+                border: Border.all(color: Colors.white.withOpacity(0.1)),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 20)],
+              ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  _centralCmdBtn('📍 ¿Dónde estás?', Colors.teal, user, members),
-                  const SizedBox(height: 8),
-                  _centralCmdBtn('🔙 Volvé', Colors.orange, user, members),
-                  const SizedBox(height: 8),
-                  _centralCmdBtn('📞 Llámame', Colors.purple, user, members),
-                  const SizedBox(height: 8),
-                  _centralCmdBtn('✋ Quedate ahí', Colors.indigo, user, members),
+                  _buildReceiverSelector(members, user),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(child: _quickBtn('Llegue', Colors.green, user)),
+                      const SizedBox(width: 8),
+                      Expanded(child: _quickBtn('Todo bien', Colors.blue, user)),
+                      const SizedBox(width: 8),
+                      Expanded(child: _quickBtn('Volviendo', Colors.orange, user)),
+                      const SizedBox(width: 8),
+                      Expanded(child: _customMsgBtn(user)),
+                    ],
+                  ),
                 ],
               ),
             ),
-
-          // Botones rápidos MIEMBRO (abajo centrado)
-          if (!isCentral)
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: 16 + bottomPad,
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  color: Colors.black.withOpacity(0.4),
-                  border: Border.all(color: Colors.white.withOpacity(0.1)),
-                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 20)],
-                ),
-                child: Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _bentoBtn('✅ Llegué', Colors.green, user),
-                    _bentoBtn('👍 Estoy bien', Colors.blue, user),
-                    _bentoBtn('🚶 Volviendo', Colors.orange, user),
-                    _bentoBtn('📞 Llámame', Colors.purple, user),
-                  ],
-                ),
-              ),
-            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _sosButton(AppUser user) {
+  Widget _buildReceiverSelector(List<AppUser> members, AppUser currentUser) {
+    final items = [
+      const DropdownMenuItem(value: 'all', child: Text('Todos', style: TextStyle(color: Colors.white))),
+      ...members.where((m) => m.uid != currentUser.uid).map((m) => DropdownMenuItem(
+            value: m.uid,
+            child: Text(m.displayName, style: const TextStyle(color: Colors.white)),
+          )),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white.withOpacity(0.08),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: _selectedReceiver,
+          dropdownColor: const Color(0xFF1E293B),
+          isExpanded: true,
+          icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
+          onChanged: (val) => setState(() => _selectedReceiver = val!),
+          items: items,
+        ),
+      ),
+    );
+  }
+
+  Widget _sosButton(AppUser user, AppAlert? activeSOS) {
+    final bool hasActiveSOS = activeSOS != null;
     return GestureDetector(
-      onTap: () => _sendSOS(user),
+      onTap: () => hasActiveSOS ? _cancelSOS(activeSOS, user.uid) : _sendSOS(user),
       child: Container(
         height: 64,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
           gradient: LinearGradient(
-            colors: [Colors.red.shade600, Colors.red.shade900],
+            colors: hasActiveSOS
+                ? [Colors.orange.shade700, Colors.orange.shade900]
+                : [Colors.red.shade600, Colors.red.shade900],
           ),
-          border: Border.all(color: Colors.red.shade200.withOpacity(0.4), width: 2),
+          border: Border.all(
+            color: hasActiveSOS ? Colors.orange.shade200.withOpacity(0.4) : Colors.red.shade200.withOpacity(0.4),
+            width: 2,
+          ),
           boxShadow: [
-            BoxShadow(color: Colors.red.withOpacity(0.4), blurRadius: 25, spreadRadius: 2),
+            BoxShadow(
+              color: hasActiveSOS ? Colors.orange.withOpacity(0.4) : Colors.red.withOpacity(0.4),
+              blurRadius: 25,
+              spreadRadius: 2,
+            ),
           ],
         ),
-        child: const Row(
+        child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.white, size: 32),
-            SizedBox(width: 12),
+            Icon(
+              hasActiveSOS ? Icons.stop_circle : Icons.warning_amber_rounded,
+              color: Colors.white,
+              size: 32,
+            ),
+            const SizedBox(width: 12),
             Text(
-              'S.O.S',
-              style: TextStyle(
+              hasActiveSOS ? 'CANCELAR S.O.S' : 'S.O.S',
+              style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
                 fontSize: 22,
@@ -229,9 +341,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           final loc = ref.watch(memberLocationProvider(member.uid)).value;
           if (loc == null) continue;
 
-          final isThisCentral = member.currentRole == 'central';
           final isMe = member.uid == currentUser.uid;
+          final isAdmin = member.uid == ref.watch(currentGroupProvider).valueOrNull?.ownerId;
           if (isMe) _myLocation = loc;
+
+          Color pinColor;
+          IconData pinIcon;
+          if (isMe) {
+            pinColor = Colors.red;
+            pinIcon = Icons.person_pin_circle;
+          } else if (isAdmin == true) {
+            pinColor = Colors.green;
+            pinIcon = Icons.admin_panel_settings;
+          } else {
+            pinColor = Colors.blue;
+            pinIcon = Icons.person_pin_circle;
+          }
 
           markers.add(Marker(
             point: loc,
@@ -242,39 +367,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Pin con nombre arriba
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: isThisCentral
-                          ? Colors.amber.shade600.withOpacity(0.9)
-                          : Colors.blue.shade600.withOpacity(0.9),
+                      color: pinColor.withOpacity(0.9),
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
-                      boxShadow: [
-                        BoxShadow(
-                          color: (isThisCentral ? Colors.amber : Colors.blue).withOpacity(0.4),
-                          blurRadius: 10,
-                        ),
-                      ],
+                      boxShadow: [BoxShadow(color: pinColor.withOpacity(0.4), blurRadius: 10)],
                     ),
                     child: Text(
-                      isMe ? 'Yo (\${member.displayName})' : member.displayName,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                      isMe ? 'Yo (${member.displayName})' : member.displayName,
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const SizedBox(height: 2),
-                  Icon(
-                    isThisCentral ? Icons.star : Icons.person_pin_circle,
-                    color: isThisCentral ? Colors.amber : Colors.blue,
-                    size: 36,
-                    shadows: [Shadow(color: Colors.black54, blurRadius: 4)],
-                  ),
+                  Icon(pinIcon, color: pinColor, size: 36, shadows: const [Shadow(color: Colors.black54, blurRadius: 4)]),
                 ],
               ),
             ),
@@ -321,63 +429,246 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _bentoBtn(String text, Color color, AppUser user) {
+  Widget _quickBtn(String text, Color color, AppUser user) {
     return GestureDetector(
       onTap: () {
-        ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'quick_message', text);
+        ref.read(firestoreServiceProvider).sendAlert(
+              user,
+              _selectedReceiver,
+              'quick_message',
+              text,
+            );
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Enviado: \$text'), duration: const Duration(seconds: 1)),
+          SnackBar(content: Text('Enviado: $text'), duration: const Duration(seconds: 1)),
         );
       },
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
           color: color.withOpacity(0.15),
           border: Border.all(color: color.withOpacity(0.4)),
-          boxShadow: [BoxShadow(color: color.withOpacity(0.2), blurRadius: 10)],
         ),
         child: Text(
           text,
-          style: TextStyle(color: color.withOpacity(0.85), fontSize: 12, fontWeight: FontWeight.w600),
-        ),
-      ),
-    );
-  }
-
-  Widget _centralCmdBtn(String text, Color color, AppUser user, List<AppUser> members) {
-    return GestureDetector(
-      onTap: () {
-        // Enviar a todos los miembros no-central
-        for (final m in members) {
-          if (m.uid != user.uid) {
-            ref.read(firestoreServiceProvider).sendAlert(user, m.uid, 'command_message', text);
-          }
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Enviado a todos: \$text'), duration: const Duration(seconds: 1)),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          color: color.withOpacity(0.2),
-          border: Border.all(color: color.withOpacity(0.5)),
-          boxShadow: [BoxShadow(color: color.withOpacity(0.3), blurRadius: 12)],
-        ),
-        child: Text(
-          text,
+          textAlign: TextAlign.center,
           style: TextStyle(color: color.withOpacity(0.9), fontSize: 12, fontWeight: FontWeight.w600),
         ),
       ),
     );
   }
 
+  Widget _customMsgBtn(AppUser user) {
+    return GestureDetector(
+      onTap: () => _showCustomMessageDialog(user),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          color: Colors.purple.withOpacity(0.15),
+          border: Border.all(color: Colors.purple.withOpacity(0.4)),
+        ),
+        child: const Text(
+          '...',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.purple, fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+      ),
+    );
+  }
+
+  void _showCustomMessageDialog(AppUser user) {
+    final ctrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Mensaje personalizado', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: ctrl,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Escribi tu mensaje...',
+            hintStyle: TextStyle(color: Colors.white.withOpacity(0.4)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              if (ctrl.text.trim().isNotEmpty) {
+                ref.read(firestoreServiceProvider).sendAlert(
+                      user,
+                      _selectedReceiver,
+                      'custom',
+                      ctrl.text.trim(),
+                    );
+                Navigator.pop(ctx);
+              }
+            },
+            child: const Text('Enviar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _sendSOS(AppUser user) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Activar S.O.S?', style: TextStyle(color: Colors.white)),
+        content: const Text('Se enviara una alerta de panico a todo el grupo.', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              await ref.read(firestoreServiceProvider).sendAlert(
+                    user,
+                    'all',
+                    'SOS',
+                    'ALERTA DE PANICO ACTIVADA!',
+                  );
+              if (mounted) Navigator.pop(ctx);
+            },
+            child: const Text('ENVIAR S.O.S', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _cancelSOS(AppAlert sos, String myUid) async {
+    final group = ref.read(currentGroupProvider).valueOrNull;
+    if (group == null) return;
+    await ref.read(firestoreServiceProvider).cancelSOS(group.id, sos.id, myUid);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('S.O.S cancelado'), backgroundColor: Colors.orange),
+      );
+    }
+  }
+
+  void _logout() async {
+    await ref.read(authServiceProvider).signOut();
+  }
+
+  void _showMembersSheet(BuildContext context, List<AppUser> members, bool isAdmin, AppGroup? group, AppUser currentUser) {
+    final messenger = ScaffoldMessenger.of(context);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) {
+        return Consumer(
+          builder: (context, ref, _) {
+            final pendingAsync = ref.watch(pendingRequestsProvider);
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Miembros', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const SizedBox(height: 12),
+                    ...members.map((m) => ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: m.uid == group?.ownerId ? Colors.green : Colors.blue,
+                            child: Icon(m.uid == group?.ownerId ? Icons.admin_panel_settings : Icons.person, color: Colors.white, size: 18),
+                          ),
+                          title: Text(m.displayName, style: const TextStyle(color: Colors.white)),
+                          subtitle: Text(m.uid == group?.ownerId ? 'Administrador' : 'Miembro', style: TextStyle(color: Colors.white.withOpacity(0.5))),
+                          trailing: isAdmin && m.uid != currentUser.uid
+                              ? IconButton(
+                                  icon: const Icon(Icons.remove_circle, color: Colors.red),
+                                  onPressed: () => _confirmRemoveMember(m, group!, currentUser.displayName),
+                                )
+                              : null,
+                        )),
+                    if (isAdmin) ...[
+                      const Divider(color: Colors.white24),
+                      const Text('Solicitudes pendientes', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                      const SizedBox(height: 8),
+                      pendingAsync.when(
+                        data: (requests) {
+                          if (requests.isEmpty) return const Text('No hay solicitudes', style: TextStyle(color: Colors.white38));
+                          return Column(
+                            children: requests.map((req) => ListTile(
+                                  title: Text(req.displayName, style: const TextStyle(color: Colors.white)),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.check_circle, color: Colors.green),
+                                        onPressed: () async {
+                                          await ref.read(firestoreServiceProvider).approveRequest(group!.id, req.uid);
+                                          messenger.showSnackBar(
+                                            SnackBar(content: Text('${req.displayName} aprobado'), backgroundColor: Colors.green),
+                                          );
+                                        },
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.cancel, color: Colors.red),
+                                        onPressed: () async {
+                                          await ref.read(firestoreServiceProvider).rejectRequest(group!.id, req.uid);
+                                          messenger.showSnackBar(
+                                            SnackBar(content: Text('${req.displayName} rechazado'), backgroundColor: Colors.red),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                )).toList(),
+                          );
+                        },
+                        loading: () => const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
+                        error: (_, __) => const SizedBox(),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmRemoveMember(AppUser member, AppGroup group, String adminName) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Text('Expulsar a ${member.displayName}?', style: const TextStyle(color: Colors.white)),
+        content: const Text('El miembro sera eliminado del grupo y recibira una notificacion.', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Expulsar', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await ref.read(firestoreServiceProvider).removeMember(group.id, member.uid, adminName);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${member.displayName} expulsado del grupo'), backgroundColor: Colors.orange),
+        );
+      }
+    }
+  }
+
   void _onMarkerTap(BuildContext context, AppUser currentUser, AppUser tapped) {
     if (currentUser.uid == tapped.uid) return;
-    if (currentUser.currentRole != 'central') return;
-
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1E293B),
@@ -387,21 +678,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              'Enviar a \${tapped.displayName}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-            ),
+            Text('Enviar a ${tapped.displayName}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
             const SizedBox(height: 16),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                _cmdBtn('📞 Llámame', currentUser, tapped.uid),
-                _cmdBtn('✅ ¿Llegaste?', currentUser, tapped.uid),
-                _cmdBtn('👍 ¿Todo bien?', currentUser, tapped.uid),
-                _cmdBtn('🔙 Volvé', currentUser, tapped.uid),
-                _cmdBtn('📍 ¿Dónde estás?', currentUser, tapped.uid),
-                _cmdBtn('📷 Envía foto', currentUser, tapped.uid),
+                _cmdBtn('Llamame', currentUser, tapped.uid),
+                _cmdBtn('Llegaste?', currentUser, tapped.uid),
+                _cmdBtn('Todo bien?', currentUser, tapped.uid),
+                _cmdBtn('Volve', currentUser, tapped.uid),
+                _cmdBtn('Donde estas?', currentUser, tapped.uid),
               ],
             ),
           ],
@@ -420,34 +707,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       onPressed: () {
         ref.read(firestoreServiceProvider).sendAlert(sender, receiverId, 'command_message', text);
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Enviado: \$text')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Enviado: $text')));
       },
       child: Text(text),
-    );
-  }
-
-  void _sendSOS(AppUser user) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text('🚨 ¿Activar S.O.S?', style: TextStyle(color: Colors.white)),
-        content: const Text('Se enviará una alerta de pánico a todo el grupo.', style: TextStyle(color: Colors.white70)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'SOS', '¡ALERTA DE PÁNICO ACTIVADA!');
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('🚨 S.O.S ENVIADO'), backgroundColor: Colors.red),
-              );
-            },
-            child: const Text('ENVIAR S.O.S', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
     );
   }
 }

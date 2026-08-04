@@ -8,8 +8,8 @@ class GeofenceService {
     final distance = Geolocator.distanceBetween(zone.lat, zone.lng, currentLat, currentLng);
     final isInside = distance <= zone.radiusMeters;
     if (_wasInside == null) { _wasInside = isInside; return null; }
-    if (_wasInside == true && !isInside) { _wasInside = false; return '⚠️ \$memberName salió de \${zone.name}'; }
-    if (_wasInside == false && isInside) { _wasInside = true; return '✅ \$memberName entró a \${zone.name}'; }
+    if (_wasInside == true && !isInside) { _wasInside = false; return '⚠️ $memberName salio de ${zone.name}'; }
+    if (_wasInside == false && isInside) { _wasInside = true; return '✅ $memberName entro a ${zone.name}'; }
     return null;
   }
 

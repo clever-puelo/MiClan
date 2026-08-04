@@ -64,10 +64,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               data: (alerts) {
                 if (alerts.isEmpty) {
                   return const Center(
-                    child: Text('No hay mensajes aún', style: TextStyle(color: Colors.white38)),
+                    child: Text('No hay mensajes aun', style: TextStyle(color: Colors.white38)),
                   );
                 }
-                // FIX: reverse:true pone el último mensaje abajo
                 return ListView.builder(
                   controller: _scrollCtrl,
                   reverse: true,
@@ -77,10 +76,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 );
               },
               loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('Error: \$e', style: const TextStyle(color: Colors.white70))),
+              error: (e, _) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white70))),
             ),
           ),
-          // Input cristal abajo
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
@@ -97,9 +95,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   GestureDetector(
                     onLongPressStart: (_) => _startRecording(user),
                     onLongPressEnd: (_) => _stopRecording(user),
-                    child: Icon(
-                      _isRecording ? Icons.stop_circle : Icons.mic,
-                      color: _isRecording ? Colors.red : Colors.green,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(
+                        _isRecording ? Icons.stop_circle : Icons.mic,
+                        color: _isRecording ? Colors.red : Colors.green,
+                        size: 28,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -136,6 +138,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget _buildBubble(AppAlert alert, AppUser currentUser) {
     final isMine = alert.senderId == currentUser.uid;
     final isSOS = alert.type == 'SOS';
+    final isCancelledSOS = isSOS && alert.sosStatus == 'cancelled';
     final time = DateFormat('HH:mm').format(alert.timestamp);
     final senderName = alert.senderName ?? 'Miembro';
 
@@ -146,14 +149,48 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.red.withOpacity(0.2),
+              color: isCancelledSOS ? Colors.orange.withOpacity(0.2) : Colors.red.withOpacity(0.2),
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.red.withOpacity(0.5)),
-              boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.3), blurRadius: 15)],
+              border: Border.all(color: isCancelledSOS ? Colors.orange.withOpacity(0.5) : Colors.red.withOpacity(0.5)),
+              boxShadow: [BoxShadow(color: isCancelledSOS ? Colors.orange.withOpacity(0.3) : Colors.red.withOpacity(0.3), blurRadius: 15)],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  isCancelledSOS ? 'S.O.S CANCELADO' : alert.payload,
+                  style: TextStyle(
+                    color: isCancelledSOS ? Colors.orangeAccent : Colors.redAccent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                if (isCancelledSOS && alert.cancelledBy != null)
+                  Text(
+                    'Cancelado por miembro',
+                    style: TextStyle(fontSize: 10, color: Colors.orange.shade200),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (alert.type == 'system') {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.purple.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.purple.withOpacity(0.3)),
             ),
             child: Text(
-              '🚨 \${alert.payload}',
-              style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 14),
+              alert.payload,
+              style: TextStyle(fontSize: 12, color: Colors.purple.shade200),
             ),
           ),
         ),
@@ -172,7 +209,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               border: Border.all(color: Colors.orange.withOpacity(0.3)),
             ),
             child: Text(
-              '📍 \${alert.payload}',
+              alert.payload,
               style: TextStyle(fontSize: 12, color: Colors.orange.shade200),
             ),
           ),
@@ -187,9 +224,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
         decoration: BoxDecoration(
-          color: isMine
-              ? Colors.blue.withOpacity(0.2)
-              : Colors.white.withOpacity(0.08),
+          color: isMine ? Colors.blue.withOpacity(0.2) : Colors.white.withOpacity(0.08),
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
             topRight: const Radius.circular(16),
@@ -197,18 +232,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             bottomRight: Radius.circular(isMine ? 4 : 16),
           ),
           border: Border.all(
-            color: isMine
-                ? Colors.blue.withOpacity(0.3)
-                : Colors.white.withOpacity(0.1),
+            color: isMine ? Colors.blue.withOpacity(0.3) : Colors.white.withOpacity(0.1),
           ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // FIX: Nombre - (mensaje)
             if (!isMine)
               Text(
-                '\$senderName -',
+                '$senderName -',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
@@ -263,7 +295,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             }
           },
         ),
-        const Text('🎤 Audio', style: TextStyle(fontSize: 12, color: Colors.white70)),
+        const Text('Audio', style: TextStyle(fontSize: 12, color: Colors.white70)),
       ],
     );
   }
@@ -279,7 +311,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (user.groupId == null) return;
     final url = await ref.read(storageServiceProvider).pickAndUploadPhoto(user.groupId!, user.uid);
     if (url != null) {
-      ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'photo', url);
+      await ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'photo', url);
     }
   }
 
@@ -287,9 +319,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final started = await ref.read(storageServiceProvider).startRecording();
     if (started) {
       setState(() => _isRecording = true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('🎤 Grabando... suelta para enviar'), duration: Duration(seconds: 1)),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Grabando... suelta para enviar'), duration: Duration(seconds: 1)),
+        );
+      }
     }
   }
 
@@ -299,7 +333,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (user.groupId == null) return;
     final url = await ref.read(storageServiceProvider).stopAndUploadRecording(user.groupId!, user.uid);
     if (url != null) {
-      ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'audio', url);
+      await ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'audio', url);
     }
   }
 }

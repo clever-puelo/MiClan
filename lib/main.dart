@@ -32,42 +32,66 @@ class MiClanApp extends ConsumerStatefulWidget {
 }
 
 class _MiClanAppState extends ConsumerState<MiClanApp> {
-  late final GoRouter _router;
+  GoRouter? _router;
   final _authListener = ValueNotifier<AsyncValue<AppUser?>>(const AsyncValue.loading());
+  bool _initialized = false;
 
   @override
   void initState() {
     super.initState();
-    _setupFCM();
+    _initApp();
+  }
 
-    ref.listenManual(currentUserProvider, (prev, next) {
+  Future<void> _initApp() async {
+    final session = await ref.read(authServiceProvider).getLocalSession();
+
+    ref.listenManual(currentUserProvider, (prev, next) async {
       _authListener.value = next;
+
+      // Verificar sessionId: si otro dispositivo se logueo, forzar logout
+      final user = next.value;
+      if (user != null && session != null && user.sessionId != null) {
+        if (user.sessionId != session.sessionId) {
+          // Sesion invalidada desde otro dispositivo
+          await ref.read(authServiceProvider).signOut();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Sesion iniciada en otro dispositivo'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+        }
+      }
     });
 
+    String initialLocation;
+    if (session == null) {
+      initialLocation = '/login';
+    } else if (session.groupId == null) {
+      initialLocation = '/onboarding';
+    } else {
+      initialLocation = '/home';
+    }
+
     _router = GoRouter(
-      initialLocation: '/',
+      initialLocation: initialLocation,
       refreshListenable: _authListener,
       redirect: (context, state) {
-        final userAsync = _authListener.value;
-        final path = state.matchedLocation;
+        if (_authListener.value.isLoading) return null;
 
-        if (userAsync.isLoading) {
-          return path == '/' ? null : path;
-        }
-
-        final user = userAsync.value;
+        final user = _authListener.value.value;
         final isLoggedIn = user != null;
         final hasGroup = user?.groupId != null;
+        final path = state.matchedLocation;
 
         if (!isLoggedIn && path != '/login') return '/login';
         if (isLoggedIn && !hasGroup && path != '/onboarding') return '/onboarding';
-        if (isLoggedIn && hasGroup && (path == '/login' || path == '/onboarding' || path == '/')) {
-          return '/home';
-        }
+        if (isLoggedIn && hasGroup && (path == '/login' || path == '/onboarding')) return '/home';
         return null;
       },
       routes: [
-        GoRoute(path: '/', redirect: (_, __) => '/home'),
         GoRoute(path: '/login', builder: (_, __) => const AuthScreen()),
         GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingScreen()),
         GoRoute(path: '/home', builder: (_, __) => const HomeScreen()),
@@ -75,6 +99,9 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
         GoRoute(path: '/settings', builder: (_, __) => const SettingsScreen()),
       ],
     );
+
+    _setupFCM();
+    if (mounted) setState(() => _initialized = true);
   }
 
   Future<void> _setupFCM() async {
@@ -99,6 +126,15 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
 
   @override
   Widget build(BuildContext context) {
+    if (!_initialized || _router == null) {
+      return MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          backgroundColor: const Color(0xFF0F172A),
+          body: Center(child: CircularProgressIndicator(color: Colors.blue.shade400)),
+        ),
+      );
+    }
     return MaterialApp.router(
       title: 'MiClan',
       debugShowCheckedModeBanner: false,
@@ -108,7 +144,7 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
         textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
         useMaterial3: true,
       ),
-      routerConfig: _router,
+      routerConfig: _router!,
     );
   }
 }

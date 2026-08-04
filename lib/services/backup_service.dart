@@ -14,10 +14,10 @@ class BackupService {
       final alerts = await _db.getAllAlerts();
       final backup = {'exportDate': DateTime.now().toIso8601String(), 'locations': locations, 'alerts': alerts};
       final dir = await getTemporaryDirectory();
-      final file = File('\${dir.path}/miclan_backup_\${DateTime.now().millisecondsSinceEpoch}.json');
+      final file = File('${dir.path}/miclan_backup_${DateTime.now().millisecondsSinceEpoch}.json');
       await file.writeAsString(jsonEncode(backup));
       await Share.shareXFiles([XFile(file.path)], text: 'Backup MiClan - Caja Negra');
-    } catch (e) { print('Error exportando: \$e'); }
+    } catch (e) { print('Error exportando: $e'); }
   }
 
   Future<bool> importBackup() async {
@@ -30,15 +30,25 @@ class BackupService {
       await _db.clearAll();
       if (backup['locations'] != null) {
         for (final loc in backup['locations']) {
-          await _db.insertLocation(loc['lat']?.toDouble() ?? 0, loc['lng']?.toDouble() ?? 0);
+          await _db.insertLocation(
+            loc['groupId'],
+            loc['lat']?.toDouble() ?? 0,
+            loc['lng']?.toDouble() ?? 0,
+          );
         }
       }
       if (backup['alerts'] != null) {
         for (final alert in backup['alerts']) {
-          await _db.insertAlert(alert['alert_data'] ?? '');
+          await _db.insertAlert(
+            groupId: alert['groupId'],
+            alertType: alert['alertType'],
+            alertData: alert['alert_data'] ?? '',
+            senderId: alert['senderId'],
+            senderName: alert['senderName'],
+          );
         }
       }
       return true;
-    } catch (e) { print('Error importando: \$e'); return false; }
+    } catch (e) { print('Error importando: $e'); return false; }
   }
 }

@@ -5,39 +5,130 @@ import '../models/app_models.dart';
 class FirestoreService {
   final _db = FirebaseFirestore.instance;
 
-  Future<String> createGroup(String name, String ownerId) async {
+  Future<AppGroup> createGroup(String name, String ownerId) async {
     final code = _generateCode();
     final ref = await _db.collection('groups').add({
-      'name': name,
+      'name': name.trim(),
       'joinCode': code,
       'ownerId': ownerId,
       'createdAt': FieldValue.serverTimestamp(),
     });
-    await _db.collection('users').doc(ownerId).update({
-      'groupId': ref.id,
-      'role': 'central',
-      'currentRole': 'central',
-    });
-    return ref.id;
+    await _db.collection('users').doc(ownerId).update({'groupId': ref.id});
+    return AppGroup(id: ref.id, name: name.trim(), joinCode: code, ownerId: ownerId);
   }
 
-  Future<AppGroup?> joinGroup(String code, String uid) async {
+  Future<bool> requestJoinGroup(String code, String uid, String displayName) async {
     final snap = await _db
         .collection('groups')
-        .where('joinCode', isEqualTo: code)
+        .where('joinCode', isEqualTo: code.toUpperCase())
         .limit(1)
         .get();
 
-    if (snap.docs.isEmpty) return null;
+    if (snap.docs.isEmpty) return false;
 
-    final group = AppGroup.fromMap(snap.docs.first.data(), snap.docs.first.id);
+    final groupId = snap.docs.first.id;
+    final userDoc = await _db.collection('users').doc(uid).get();
+    if (userDoc.data()?['groupId'] == groupId) return false;
 
-    // FIX: Resetear rol al unirse a un grupo nuevo
-    await _db.collection('users').doc(uid).update({
-      'groupId': group.id,
-      'currentRole': 'miembro',
+    await _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('pendingRequests')
+        .doc(uid)
+        .set({
+      'uid': uid,
+      'displayName': displayName,
+      'requestedAt': FieldValue.serverTimestamp(),
+      'status': 'pending',
     });
-    return group;
+    return true;
+  }
+
+  Future<void> approveRequest(String groupId, String requestUid) async {
+    await _db.collection('users').doc(requestUid).update({'groupId': groupId});
+    await _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('pendingRequests')
+        .doc(requestUid)
+        .update({'status': 'approved'});
+  }
+
+  Future<void> rejectRequest(String groupId, String requestUid) async {
+    await _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('pendingRequests')
+        .doc(requestUid)
+        .update({'status': 'rejected'});
+  }
+
+  Future<void> removeMember(String groupId, String memberUid, String adminName) async {
+    // Quitar groupId del miembro
+    await _db.collection('users').doc(memberUid).update({
+      'groupId': FieldValue.delete(),
+    });
+    // Borrar su ubicacion
+    await _db.collection('locations').doc(memberUid).delete();
+    // Enviar alerta de expulsion al grupo
+    await _db.collection('alerts').add({
+      'groupId': groupId,
+      'senderId': 'system',
+      'receiverId': 'all',
+      'type': 'system',
+      'payload': 'Miembro expulsado por $adminName',
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> leaveGroup(String uid, String? groupId, bool isOwner) async {
+    if (groupId == null) return;
+
+    if (isOwner) {
+      await _deleteGroup(groupId);
+    }
+
+    await _db.collection('users').doc(uid).update({
+      'groupId': FieldValue.delete(),
+    });
+  }
+
+  Future<void> _deleteGroup(String groupId) async {
+    final pending = await _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('pendingRequests')
+        .get();
+    for (final d in pending.docs) await d.reference.delete();
+
+    await _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('geofence')
+        .doc('main')
+        .delete();
+
+    QuerySnapshot? alertsSnap;
+    do {
+      alertsSnap = await _db
+          .collection('alerts')
+          .where('groupId', isEqualTo: groupId)
+          .limit(500)
+          .get();
+      final batch = _db.batch();
+      for (final d in alertsSnap.docs) batch.delete(d.reference);
+      await batch.commit();
+    } while (alertsSnap.docs.isNotEmpty);
+
+    final members = await _db
+        .collection('users')
+        .where('groupId', isEqualTo: groupId)
+        .get();
+    for (final m in members.docs) {
+      await _db.collection('locations').doc(m.id).delete();
+    }
+
+    await _db.collection('groups').doc(groupId).delete();
   }
 
   Stream<AppGroup?> getGroupStream(String groupId) {
@@ -53,16 +144,17 @@ class FirestoreService {
         .collection('users')
         .where('groupId', isEqualTo: groupId)
         .snapshots()
-        .map(
-          (snap) => snap.docs.map((d) => AppUser.fromMap(d.data(), d.id)).toList(),
-        );
+        .map((snap) => snap.docs.map((d) => AppUser.fromMap(d.data(), d.id)).toList());
   }
 
-  Future<void> leaveGroup(String uid) async {
-    await _db.collection('users').doc(uid).update({
-      'groupId': FieldValue.delete(),
-      'currentRole': 'miembro',
-    });
+  Stream<List<PendingRequest>> getPendingRequestsStream(String groupId) {
+    return _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('pendingRequests')
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .map((snap) => snap.docs.map((d) => PendingRequest.fromMap(d.data(), d.id)).toList());
   }
 
   String _generateCode() {
@@ -99,23 +191,50 @@ class FirestoreService {
     });
   }
 
-  Future<void> sendAlert(
+  Future<String> sendAlert(
     AppUser sender,
     String receiverId,
     String type,
-    String payload,
-  ) async {
-    if (sender.groupId == null) return;
-    await _db.collection('alerts').add({
+    String payload, {
+    String? senderName,
+  }) async {
+    if (sender.groupId == null) return '';
+    final doc = await _db.collection('alerts').add({
       'groupId': sender.groupId,
       'senderId': sender.uid,
       'receiverId': receiverId,
       'type': type,
       'payload': payload,
-      'senderName': sender.displayName,
+      'senderName': senderName ?? sender.displayName,
       'timestamp': FieldValue.serverTimestamp(),
-      'notified': false,
+      'sosStatus': type == 'SOS' ? 'active' : null,
     });
+    await _rotateAlerts(sender.groupId!);
+    return doc.id;
+  }
+
+  Future<void> cancelSOS(String groupId, String alertId, String cancelledByUid) async {
+    await _db.collection('alerts').doc(alertId).update({
+      'sosStatus': 'cancelled',
+      'cancelledBy': cancelledByUid,
+      'cancelledAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> _rotateAlerts(String groupId) async {
+    final snap = await _db
+        .collection('alerts')
+        .where('groupId', isEqualTo: groupId)
+        .orderBy('timestamp', descending: false)
+        .get();
+    if (snap.docs.length > 300) {
+      final toDelete = snap.docs.length - 300;
+      final batch = _db.batch();
+      for (int i = 0; i < toDelete && i < snap.docs.length; i++) {
+        batch.delete(snap.docs[i].reference);
+      }
+      await batch.commit();
+    }
   }
 
   Stream<List<AppAlert>> getGroupAlertsStream(String groupId) {
@@ -125,13 +244,19 @@ class FirestoreService {
         .orderBy('timestamp', descending: true)
         .limit(100)
         .snapshots()
-        .map(
-          (snap) => snap.docs.map((d) => AppAlert.fromMap(d.data(), d.id)).toList(),
-        );
+        .map((snap) => snap.docs.map((d) => AppAlert.fromMap(d.data(), d.id)).toList());
   }
 
-  Future<void> updateUserRole(String uid, String newRole) async {
-    await _db.collection('users').doc(uid).update({'currentRole': newRole});
+  Stream<AppAlert?> getActiveSOSStream(String groupId) {
+    return _db
+        .collection('alerts')
+        .where('groupId', isEqualTo: groupId)
+        .where('type', isEqualTo: 'SOS')
+        .where('sosStatus', isEqualTo: 'active')
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .snapshots()
+        .map((snap) => snap.docs.isNotEmpty ? AppAlert.fromMap(snap.docs.first.data(), snap.docs.first.id) : null);
   }
 
   Future<void> saveGeofence(String groupId, GeofenceZone zone) async {
@@ -150,9 +275,7 @@ class FirestoreService {
         .collection('geofence')
         .doc('main')
         .snapshots()
-        .map(
-          (doc) => doc.exists ? GeofenceZone.fromMap(doc.data()!) : null,
-        );
+        .map((doc) => doc.exists ? GeofenceZone.fromMap(doc.data()!) : null);
   }
 
   Future<void> deleteGeofence(String groupId) async {

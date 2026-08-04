@@ -15,17 +15,54 @@ class DatabaseHelper {
 
   _initDB() async {
     String path = join(await getDatabasesPath(), 'miclan_cajanegra.db');
-    return await openDatabase(path, version: 1, onCreate: _onCreate);
+    return await openDatabase(path, version: 2, onCreate: _onCreate, onUpgrade: _onUpgrade);
   }
 
   _onCreate(Database db, int version) async {
-    await db.execute('''CREATE TABLE locations (id INTEGER PRIMARY KEY AUTOINCREMENT, lat REAL, lng REAL, timestamp TEXT, synced INTEGER DEFAULT 0)''');
-    await db.execute('''CREATE TABLE alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, alert_data TEXT, timestamp TEXT, synced INTEGER DEFAULT 0)''');
+    await db.execute('''
+      CREATE TABLE locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        groupId TEXT,
+        lat REAL,
+        lng REAL,
+        timestamp TEXT,
+        synced INTEGER DEFAULT 0
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        groupId TEXT,
+        alertType TEXT,
+        alertData TEXT,
+        senderId TEXT,
+        senderName TEXT,
+        timestamp TEXT,
+        synced INTEGER DEFAULT 0
+      )
+    ''');
   }
 
-  Future<void> insertLocation(double lat, double lng) async {
+  _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('ALTER TABLE locations ADD COLUMN groupId TEXT');
+      await db.execute('ALTER TABLE alerts ADD COLUMN groupId TEXT');
+      await db.execute('ALTER TABLE alerts ADD COLUMN alertType TEXT');
+      await db.execute('ALTER TABLE alerts ADD COLUMN senderId TEXT');
+      await db.execute('ALTER TABLE alerts ADD COLUMN senderName TEXT');
+    }
+  }
+
+  Future<void> insertLocation(String? groupId, double lat, double lng) async {
     final db = await database;
-    await db.insert('locations', {'lat': lat, 'lng': lng, 'timestamp': DateTime.now().toIso8601String(), 'synced': 0});
+    await db.insert('locations', {
+      'groupId': groupId,
+      'lat': lat,
+      'lng': lng,
+      'timestamp': DateTime.now().toIso8601String(),
+      'synced': 0,
+    });
+    await _rotateLocations(groupId);
   }
 
   Future<List<Map<String, dynamic>>> getUnsyncedLocations() async {
@@ -40,17 +77,74 @@ class DatabaseHelper {
 
   Future<List<Map<String, dynamic>>> getAllLocations() async {
     final db = await database;
-    return await db.query('locations');
+    return await db.query('locations', orderBy: 'timestamp DESC');
+  }
+
+  Future<void> _rotateLocations(String? groupId) async {
+    final db = await database;
+    final count = Sqflite.firstIntValue(await db.rawQuery(
+      'SELECT COUNT(*) FROM locations WHERE groupId = ?',
+      [groupId],
+    )) ?? 0;
+    if (count > 300) {
+      final toDelete = count - 300;
+      final rows = await db.query(
+        'locations',
+        where: 'groupId = ?',
+        whereArgs: [groupId],
+        orderBy: 'timestamp ASC',
+        limit: toDelete,
+      );
+      for (final row in rows) {
+        await db.delete('locations', where: 'id = ?', whereArgs: [row['id']]);
+      }
+    }
+  }
+
+  Future<void> insertAlert({
+    String? groupId,
+    String? alertType,
+    required String alertData,
+    String? senderId,
+    String? senderName,
+  }) async {
+    final db = await database;
+    await db.insert('alerts', {
+      'groupId': groupId,
+      'alertType': alertType,
+      'alertData': alertData,
+      'senderId': senderId,
+      'senderName': senderName,
+      'timestamp': DateTime.now().toIso8601String(),
+      'synced': 0,
+    });
+    await _rotateAlerts(groupId);
   }
 
   Future<List<Map<String, dynamic>>> getAllAlerts() async {
     final db = await database;
-    return await db.query('alerts');
+    return await db.query('alerts', orderBy: 'timestamp DESC');
   }
 
-  Future<void> insertAlert(String alertData) async {
+  Future<void> _rotateAlerts(String? groupId) async {
     final db = await database;
-    await db.insert('alerts', {'alert_data': alertData, 'timestamp': DateTime.now().toIso8601String(), 'synced': 0});
+    final count = Sqflite.firstIntValue(await db.rawQuery(
+      'SELECT COUNT(*) FROM alerts WHERE groupId = ?',
+      [groupId],
+    )) ?? 0;
+    if (count > 300) {
+      final toDelete = count - 300;
+      final rows = await db.query(
+        'alerts',
+        where: 'groupId = ?',
+        whereArgs: [groupId],
+        orderBy: 'timestamp ASC',
+        limit: toDelete,
+      );
+      for (final row in rows) {
+        await db.delete('alerts', where: 'id = ?', whereArgs: [row['id']]);
+      }
+    }
   }
 
   Future<void> clearAll() async {

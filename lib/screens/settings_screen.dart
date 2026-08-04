@@ -30,32 +30,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final user = ref.watch(currentUserProvider).valueOrNull;
     final group = ref.watch(currentGroupProvider).valueOrNull;
     final geofence = ref.watch(geofenceZoneProvider).valueOrNull;
-    final isCentral = user?.currentRole == 'central';
+    final isAdmin = user?.uid == group?.ownerId;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: const Text('Configuración', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Configuracion', style: TextStyle(fontWeight: FontWeight.bold)),
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           _sectionTitle('Cuenta'),
           _glassTile(label: 'Nombre', value: user?.displayName ?? '-'),
-          _glassTile(label: 'Rol actual', value: user?.currentRole == 'central' ? 'Central' : 'Miembro'),
+          _glassTile(label: 'Email', value: user?.email ?? '-'),
           const SizedBox(height: 8),
           _divider(),
           _sectionTitle('Grupo'),
           _glassTile(label: 'Nombre', value: group?.name ?? 'Sin grupo'),
-          if (isCentral && group != null) _glassTile(label: 'Código', value: group.joinCode),
+          if (isAdmin && group != null) _glassTile(label: 'Codigo', value: group.joinCode),
           const SizedBox(height: 8),
           _divider(),
-          if (isCentral) ...[
+          if (isAdmin) ...[
             _sectionTitle('Zona Segura'),
             if (geofence != null) ...[
-              _glassTile(label: 'Zona activa', value: '\${geofence.name} (\${geofence.radiusMeters}m)'),
+              _glassTile(label: 'Zona activa', value: '${geofence.name} (${geofence.radiusMeters}m)'),
               _actionTile(icon: Icons.delete, text: 'Eliminar zona', color: Colors.red, onTap: () async {
                 if (group != null) {
                   await ref.read(firestoreServiceProvider).deleteGeofence(group.id);
@@ -66,13 +66,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _actionTile(
                 icon: Icons.add_location,
                 text: 'Crear zona segura',
-                subtitle: 'Perímetro alrededor de tu ubicación',
+                subtitle: 'Perimetro alrededor de tu ubicacion',
                 onTap: () => _showGeofenceDialog(group?.id ?? ''),
               ),
             ],
             _divider(),
           ],
-          _sectionTitle('Batería'),
+          _sectionTitle('Bateria'),
           SwitchListTile(
             title: const Text('Modo ahorro', style: TextStyle(color: Colors.white)),
             subtitle: Text(
@@ -89,7 +89,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           _actionTile(
             icon: Icons.battery_alert,
-            text: 'Desactivar optimización',
+            text: 'Desactivar optimizacion',
             subtitle: 'Evita que Android cierre la app',
             onTap: _openBatterySettings,
           ),
@@ -104,20 +104,73 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'Backup importado' : 'Error')));
           }),
           _divider(),
-          _sectionTitle('Sesión'),
+          _sectionTitle('Grupo / Cuenta'),
           _actionTile(
-            icon: Icons.swap_horiz,
-            text: 'Cambiar de grupo',
+            icon: Icons.exit_to_app,
+            text: 'Salir del grupo',
+            color: Colors.orange,
             onTap: () async {
-              if (user != null) {
-                await ref.read(firestoreServiceProvider).leaveGroup(user.uid);
-                if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+              if (user == null || group == null) return;
+              final isOwner = user.uid == group.ownerId;
+              if (isOwner) {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    backgroundColor: const Color(0xFF1E293B),
+                    title: const Text('Borrar grupo?', style: TextStyle(color: Colors.white)),
+                    content: const Text('Como administrador, al salir se eliminara el grupo completo. Los miembros quedaran huerfanos. Continuar?', style: TextStyle(color: Colors.white70)),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('Borrar', style: TextStyle(color: Colors.white)),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm != true) return;
               }
+              await ref.read(firestoreServiceProvider).leaveGroup(user.uid, group.id, isOwner);
+              await ref.read(authServiceProvider).updateGroupId(user.uid, null);
+              if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
             },
           ),
           _actionTile(
+            icon: Icons.delete_forever,
+            text: 'Eliminar cuenta permanentemente',
+            color: Colors.red,
+            onTap: () async {
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: const Color(0xFF1E293B),
+                  title: const Text('Eliminar cuenta?', style: TextStyle(color: Colors.white)),
+                  content: const Text('Esta accion no se puede deshacer. Continuar?', style: TextStyle(color: Colors.white70)),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Eliminar', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true && user != null) {
+                if (group != null) {
+                  final isOwner = user.uid == group.ownerId;
+                  await ref.read(firestoreServiceProvider).leaveGroup(user.uid, group.id, isOwner);
+                }
+                await ref.read(authServiceProvider).deleteAccount(user.uid);
+              }
+            },
+          ),
+          _divider(),
+          _sectionTitle('Sesion'),
+          _actionTile(
             icon: Icons.logout,
-            text: 'Cerrar sesión',
+            text: 'Cerrar sesion (logout completo)',
             color: Colors.red,
             onTap: () async {
               await ref.read(authServiceProvider).signOut();
@@ -222,7 +275,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       intent.launch();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir configuración')),
+        const SnackBar(content: Text('No se pudo abrir configuracion')),
       );
     }
   }

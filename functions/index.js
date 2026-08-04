@@ -1,87 +1,79 @@
-const functions = require("firebase-functions");
-const admin = require("firebase-admin");
+const functions = require('firebase-functions');
+const admin = require('firebase-admin');
+
 admin.initializeApp();
 
-exports.onAlertCreated = functions.firestore
-  .document("alerts/{alertId}")
+exports.sendNotification = functions.firestore
+  .document('alerts/{alertId}')
   .onCreate(async (snap, context) => {
-    const alertData = snap.data();
-    const groupId = alertData.groupId;
-    const senderId = alertData.senderId;
-    const receiverId = alertData.receiverId;
-    const type = alertData.type;
+    const alert = snap.data();
+    const {groupId, senderId, receiverId, type, payload, senderName} = alert;
 
-    try {
-      const membersSnapshot = await admin.firestore()
-        .collection("users")
-        .where("groupId", "==", groupId)
-        .get();
-
-      const tokens = [];
-      for (const doc of membersSnapshot.docs) {
-        const userData = doc.data();
-        if (doc.id !== senderId && userData.fcmToken) {
-          if (receiverId === 'all' || receiverId === doc.id) {
-            tokens.push(userData.fcmToken);
-          }
-        }
-      }
-
-      if (tokens.length === 0) return null;
-
-      let title, body;
-      switch (type) {
-        case 'SOS':
-          title = "?? ALERTA S.O.S";
-          body = "?Un miembro ha activado el bot車n de p芍nico!";
-          break;
-        case 'quick_message':
-          title = "?? Mensaje R芍pido";
-          body = alertData.payload || "Nuevo mensaje";
-          break;
-        case 'command_message':
-          title = "?? Mensaje de la Central";
-          body = alertData.payload || "La Central te env赤a un mensaje";
-          break;
-        case 'photo':
-          title = "?? Foto recibida";
-          body = "Un miembro envi車 una foto";
-          break;
-        case 'audio':
-          title = "?? Audio recibido";
-          body = "Un miembro envi車 una nota de audio";
-          break;
-        case 'geofence':
-          title = "?? Alerta de Zona";
-          body = alertData.payload || "Un miembro cruz車 el l赤mite de zona";
-          break;
-        default:
-          title = "Notificaci車n MiClan";
-          body = "Nueva notificaci車n";
-      }
-
-      const message = {
-        tokens: tokens,
-        notification: { title, body },
-        data: { type, alertId: context.params.alertId },
-        android: {
-          priority: "high",
-          notification: {
-            sound: "default",
-            channel_id: "miclan_critical_channel",
-          },
-        },
-      };
-
-      const response = await admin.messaging().sendEachForMulticast(message);
-      console.log(`FCM enviado a ${response.successCount} dispositivos`);
-      await snap.ref.update({
-        notified: true,
-        notifiedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-      return null;
-    } catch (error) {
-      console.error("Error FCM:", error);
+    if (!groupId) {
       return null;
     }
+
+    let tokens = [];
+    if (receiverId !== 'all') {
+      const userDoc = await admin.firestore().collection('users').doc(receiverId).get();
+      const token = userDoc.data()?.fcmToken;
+      if (token) {
+        tokens.push(token);
+      }
+    } else {
+      const members = await admin.firestore()
+        .collection('users')
+        .where('groupId', '==', groupId)
+        .get();
+      members.docs.forEach((doc) => {
+        if (doc.id !== senderId) {
+          const token = doc.data().fcmToken;
+          if (token) {
+            tokens.push(token);
+          }
+        }
+      });
+    }
+
+    if (tokens.length === 0) {
+      return null;
+    }
+
+    let title;
+    let body;
+    if (type === 'SOS') {
+      title = 'S.O.S - MiClan';
+      body = 'ALERTA DE PANICO de ' + (senderName || 'Miembro');
+    } else if (type === 'photo') {
+      title = (senderName || 'Miembro');
+      body = 'Te envio una foto';
+    } else if (type === 'audio') {
+      title = (senderName || 'Miembro');
+      body = 'Te envio un audio';
+    } else {
+      title = (senderName || 'Miembro');
+      body = payload;
+    }
+
+    const message = {
+      tokens: tokens,
+      notification: {title: title, body: body},
+      data: {type: type, groupId: groupId, alertId: context.params.alertId},
+      android: {
+        priority: type === 'SOS' ? 'high' : 'normal',
+        notification: {
+          channelId: type === 'SOS' ? 'sos_channel' : 'msg_channel',
+          sound: 'default',
+        },
+      },
+    };
+
+    try {
+      const response = await admin.messaging().sendEachForMulticast(message);
+      console.log('Notificaciones enviadas:', response.successCount);
+    } catch (error) {
+      console.error('Error enviando:', error);
+    }
+
+    return null;
   });
