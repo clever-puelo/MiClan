@@ -17,28 +17,20 @@ class StorageService {
       final image = await _picker.pickImage(source: ImageSource.camera, maxWidth: 1200, imageQuality: 80);
       if (image == null) return null;
       return await _uploadFile(File(image.path), groupId, uid, 'photos', '.jpg');
-    } catch (e) {
-      print('Error foto: $e');
-      return null;
-    }
+    } catch (e) { print('Error foto: \$e'); return null; }
   }
 
   Future<bool> startRecording() async {
     try {
       if (await _audioRecorder.hasPermission()) {
         final dir = await getTemporaryDirectory();
-        _recordingPath = '${dir.path}/${const Uuid().v4()}.m4a';
-        await _audioRecorder.start(
-          const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 44100),
-          path: _recordingPath!,
-        );
+        _recordingPath = '\${dir.path}/\${const Uuid().v4()}.m4a';
+        await _audioRecorder.start(const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 44100), path: _recordingPath!);
         _isRecording = true;
         return true;
       }
       return false;
-    } catch (e) {
-      return false;
-    }
+    } catch (e) { return false; }
   }
 
   Future<String?> stopAndUploadRecording(String groupId, String uid) async {
@@ -48,16 +40,14 @@ class StorageService {
       _isRecording = false;
       if (path == null) return null;
       return await _uploadFile(File(path), groupId, uid, 'audio', '.m4a');
-    } catch (e) {
-      return null;
-    }
+    } catch (e) { return null; }
   }
 
   bool get isRecording => _isRecording;
 
   Future<String> _uploadFile(File file, String groupId, String uid, String folder, String ext) async {
-    final fileName = '${DateTime.now().millisecondsSinceEpoch}$ext';
-    final ref = _storage.ref().child('$folder/$groupId/$uid/$fileName');
+    final fileName = '\${DateTime.now().millisecondsSinceEpoch}\$ext';
+    final ref = _storage.ref().child('\$folder/\$groupId/\$uid/\$fileName');
     await ref.putFile(file);
     return await ref.getDownloadURL();
   }

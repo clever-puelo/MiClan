@@ -15,6 +15,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   final MapController _mapController = MapController();
   LatLng? _myLocation;
+  bool _mapReady = false;
 
   @override
   void initState() {
@@ -24,12 +25,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _initLocation() async {
     final pos = await ref.read(locationServiceProvider).getCurrentPosition();
-    if (pos != null) {
+    if (pos != null && mounted) {
       setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
-      final user = ref.read(currentUserProvider).value;
+      if (_mapReady) {
+        _mapController.move(_myLocation!, 16);
+      }
+      final user = ref.read(currentUserProvider).valueOrNull;
       if (user?.groupId != null) {
         ref.read(locationServiceProvider).startTracking(user!.uid, user.groupId!);
       }
+    }
+  }
+
+  void _centerOnMe() {
+    if (_myLocation != null) {
+      _mapController.move(_myLocation!, 17);
     }
   }
 
@@ -42,160 +52,325 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return userAsync.when(
       data: (user) => membersAsync.when(
         data: (members) => groupAsync.when(
-          data: (group) => _buildUI(context, user, members, group),
-          loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-          error: (e, _) => Scaffold(body: Center(child: Text('Error: $e'))),
+          data: (group) => _buildUI(context, user!, members, group),
+          loading: () => _loadingScaffold(),
+          error: (e, _) => _errorScaffold('Error grupo: \$e'),
         ),
-        loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-        error: (e, _) => Scaffold(body: Center(child: Text('Error: $e'))),
+        loading: () => _loadingScaffold(),
+        error: (e, _) => _errorScaffold('Error miembros: \$e'),
       ),
-      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (e, _) => Scaffold(body: Center(child: Text('Error: $e'))),
+      loading: () => _loadingScaffold(),
+      error: (e, _) => _errorScaffold('Error usuario: \$e'),
     );
   }
 
+  Widget _loadingScaffold() => const Scaffold(
+        backgroundColor: Color(0xFF0F172A),
+        body: Center(child: CircularProgressIndicator(color: Colors.blue)),
+      );
+
+  Widget _errorScaffold(String msg) => Scaffold(
+        backgroundColor: const Color(0xFF0F172A),
+        body: Center(child: Text(msg, style: const TextStyle(color: Colors.white70))),
+      );
+
   Widget _buildUI(BuildContext context, AppUser user, List<AppUser> members, AppGroup? group) {
     final isCentral = user.currentRole == 'central';
-    final centralMember = members.where((m) => m.currentRole == 'central').firstOrNull;
-
-    List<Marker> markers = [];
-    LatLng? centralLoc;
-
-    for (var member in members) {
-      final loc = ref.watch(memberLocationProvider(member.uid)).value;
-      if (loc == null) continue;
-
-      if (member.uid == user.uid) _myLocation = loc;
-      final isThisCentral = member.currentRole == 'central';
-      if (isThisCentral) centralLoc = loc;
-
-      markers.add(Marker(
-        point: loc, width: 100, height: 80,
-        child: GestureDetector(
-          onTap: () => _onMarkerTap(context, user, member),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                isThisCentral ? Icons.star : Icons.person_pin_circle,
-                color: isThisCentral ? Colors.amber : Colors.blue,
-                size: 40,
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  member.displayName,
-                  style: TextStyle(
-                    fontSize: 10, fontWeight: FontWeight.bold,
-                    color: isThisCentral ? Colors.amber.shade800 : Colors.blue.shade800,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ));
-    }
-
-    final mapCenter = centralLoc ?? _myLocation ?? LatLng(-34.6037, -58.3816);
+    final bottomPad = MediaQuery.of(context).padding.bottom;
 
     return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: Text(group?.name ?? 'MiClan'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: Text(
+          '\${user.displayName} - \${group?.name ?? "MiClan"}',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.chat), tooltip: 'Chat del Grupo',
-            onPressed: () => context.push('/chat'),
-          ),
-          IconButton(
-            icon: Icon(isCentral ? Icons.admin_panel_settings : Icons.person),
-            tooltip: 'Cambiar Rol',
-            onPressed: () => _toggleRole(user),
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => context.push('/settings'),
-          ),
+          _glassButton(icon: Icons.chat, onTap: () => context.push('/chat')),
+          _glassButton(icon: Icons.settings, onTap: () => context.push('/settings')),
         ],
       ),
       body: Stack(
         children: [
+          // Mapa
           FlutterMap(
             mapController: _mapController,
-            options: MapOptions(initialCenter: mapCenter, initialZoom: 15.0),
+            options: MapOptions(
+              initialCenter: _myLocation ?? const LatLng(-34.6037, -58.3816),
+              initialZoom: _myLocation != null ? 16.0 : 12.0,
+              onMapReady: () {
+                _mapReady = true;
+                if (_myLocation != null) _mapController.move(_myLocation!, 16);
+              },
+            ),
             children: [
-              TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.agiletask.miclan'),
-              MarkerLayer(markers: markers),
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.agiletask.miclan',
+              ),
+              _buildMarkersLayer(members, user),
             ],
           ),
 
+          // SOS ARRIBA - separado, grande
           Positioned(
-            right: 16, bottom: 120,
-            child: Column(
-              children: [
-                if (!isCentral && centralLoc != null)
-                  _mapButton('¿Dónde está\nCentral?', Icons.star, Colors.amber, () => _mapController.move(centralLoc!, 17.0)),
-                const SizedBox(height: 8),
-                if (_myLocation != null)
-                  _mapButton('¿Dónde\nestoy?', Icons.my_location, Colors.blue, () => _mapController.move(_myLocation!, 17.0)),
-              ],
+            top: MediaQuery.of(context).padding.top + 60,
+            left: 16,
+            right: 16,
+            child: _sosButton(user),
+          ),
+
+          // Botón centrador (mi ubicación)
+          Positioned(
+            right: 16,
+            bottom: isCentral ? 24 : 180 + bottomPad,
+            child: _glassFAB(
+              icon: Icons.my_location,
+              color: Colors.blue.shade400,
+              onTap: _centerOnMe,
             ),
           ),
 
+          // Botones de CENTRAL (arriba a la izquierda)
+          if (isCentral)
+            Positioned(
+              left: 16,
+              bottom: 24,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _centralCmdBtn('📍 ¿Dónde estás?', Colors.teal, user, members),
+                  const SizedBox(height: 8),
+                  _centralCmdBtn('🔙 Volvé', Colors.orange, user, members),
+                  const SizedBox(height: 8),
+                  _centralCmdBtn('📞 Llámame', Colors.purple, user, members),
+                  const SizedBox(height: 8),
+                  _centralCmdBtn('✋ Quedate ahí', Colors.indigo, user, members),
+                ],
+              ),
+            ),
+
+          // Botones rápidos MIEMBRO (abajo centrado)
           if (!isCentral)
             Positioned(
-              left: 0, right: 0, bottom: 0,
+              left: 16,
+              right: 16,
+              bottom: 16 + bottomPad,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.black87,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                  borderRadius: BorderRadius.circular(20),
+                  color: Colors.black.withOpacity(0.4),
+                  border: Border.all(color: Colors.white.withOpacity(0.1)),
+                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 20)],
                 ),
                 child: Wrap(
-                  alignment: WrapAlignment.center, spacing: 6, runSpacing: 6,
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    _quickBtn('✅ Llegué', Colors.green, user),
-                    _quickBtn('👍 Estoy bien', Colors.blue, user),
-                    _quickBtn('🚶 Volviendo', Colors.orange, user),
-                    _quickBtn('📞 Llámame', Colors.purple, user),
+                    _bentoBtn('✅ Llegué', Colors.green, user),
+                    _bentoBtn('👍 Estoy bien', Colors.blue, user),
+                    _bentoBtn('🚶 Volviendo', Colors.orange, user),
+                    _bentoBtn('📞 Llámame', Colors.purple, user),
                   ],
                 ),
               ),
             ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Colors.red.shade700,
-        onPressed: () => _sendSOS(user),
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.white),
-        label: const Text('S.O.S', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+    );
+  }
+
+  Widget _sosButton(AppUser user) {
+    return GestureDetector(
+      onTap: () => _sendSOS(user),
+      child: Container(
+        height: 64,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+            colors: [Colors.red.shade600, Colors.red.shade900],
+          ),
+          border: Border.all(color: Colors.red.shade200.withOpacity(0.4), width: 2),
+          boxShadow: [
+            BoxShadow(color: Colors.red.withOpacity(0.4), blurRadius: 25, spreadRadius: 2),
+          ],
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.white, size: 32),
+            SizedBox(width: 12),
+            Text(
+              'S.O.S',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 22,
+                letterSpacing: 2,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _mapButton(String label, IconData icon, Color color, VoidCallback onTap) {
-    return FloatingActionButton.small(
-      heroTag: label, backgroundColor: color,
-      onPressed: onTap,
-      child: Icon(icon, color: Colors.white),
-    );
-  }
+  Widget _buildMarkersLayer(List<AppUser> members, AppUser currentUser) {
+    return Consumer(
+      builder: (context, ref, child) {
+        final markers = <Marker>[];
 
-  Widget _quickBtn(String text, Color color, AppUser user) {
-    return ElevatedButton(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: color, foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      ),
-      onPressed: () {
-        ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'quick_message', text);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Enviado: $text'), duration: const Duration(seconds: 1)));
+        for (var member in members) {
+          final loc = ref.watch(memberLocationProvider(member.uid)).value;
+          if (loc == null) continue;
+
+          final isThisCentral = member.currentRole == 'central';
+          final isMe = member.uid == currentUser.uid;
+          if (isMe) _myLocation = loc;
+
+          markers.add(Marker(
+            point: loc,
+            width: 120,
+            height: 100,
+            child: GestureDetector(
+              onTap: () => _onMarkerTap(context, currentUser, member),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Pin con nombre arriba
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: isThisCentral
+                          ? Colors.amber.shade600.withOpacity(0.9)
+                          : Colors.blue.shade600.withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
+                      boxShadow: [
+                        BoxShadow(
+                          color: (isThisCentral ? Colors.amber : Colors.blue).withOpacity(0.4),
+                          blurRadius: 10,
+                        ),
+                      ],
+                    ),
+                    child: Text(
+                      isMe ? 'Yo (\${member.displayName})' : member.displayName,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Icon(
+                    isThisCentral ? Icons.star : Icons.person_pin_circle,
+                    color: isThisCentral ? Colors.amber : Colors.blue,
+                    size: 36,
+                    shadows: [Shadow(color: Colors.black54, blurRadius: 4)],
+                  ),
+                ],
+              ),
+            ),
+          ));
+        }
+        return MarkerLayer(markers: markers);
       },
-      child: Text(text, style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  Widget _glassButton({required IconData icon, required VoidCallback onTap}) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: Colors.white.withOpacity(0.1),
+            border: Border.all(color: Colors.white.withOpacity(0.2)),
+          ),
+          child: Icon(icon, color: Colors.white, size: 20),
+        ),
+      ),
+    );
+  }
+
+  Widget _glassFAB({required IconData icon, required Color color, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          color: color.withOpacity(0.2),
+          border: Border.all(color: color.withOpacity(0.5)),
+          boxShadow: [BoxShadow(color: color.withOpacity(0.3), blurRadius: 15)],
+        ),
+        child: Icon(icon, color: Colors.white, size: 22),
+      ),
+    );
+  }
+
+  Widget _bentoBtn(String text, Color color, AppUser user) {
+    return GestureDetector(
+      onTap: () {
+        ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'quick_message', text);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Enviado: \$text'), duration: const Duration(seconds: 1)),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          color: color.withOpacity(0.15),
+          border: Border.all(color: color.withOpacity(0.4)),
+          boxShadow: [BoxShadow(color: color.withOpacity(0.2), blurRadius: 10)],
+        ),
+        child: Text(
+          text,
+          style: TextStyle(color: color.withOpacity(0.85), fontSize: 12, fontWeight: FontWeight.w600),
+        ),
+      ),
+    );
+  }
+
+  Widget _centralCmdBtn(String text, Color color, AppUser user, List<AppUser> members) {
+    return GestureDetector(
+      onTap: () {
+        // Enviar a todos los miembros no-central
+        for (final m in members) {
+          if (m.uid != user.uid) {
+            ref.read(firestoreServiceProvider).sendAlert(user, m.uid, 'command_message', text);
+          }
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Enviado a todos: \$text'), duration: const Duration(seconds: 1)),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          color: color.withOpacity(0.2),
+          border: Border.all(color: color.withOpacity(0.5)),
+          boxShadow: [BoxShadow(color: color.withOpacity(0.3), blurRadius: 12)],
+        ),
+        child: Text(
+          text,
+          style: TextStyle(color: color.withOpacity(0.9), fontSize: 12, fontWeight: FontWeight.w600),
+        ),
+      ),
     );
   }
 
@@ -205,16 +380,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Enviar a ${tapped.displayName}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(
+              'Enviar a \${tapped.displayName}',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+            ),
             const SizedBox(height: 16),
             Wrap(
-              spacing: 8, runSpacing: 8,
+              spacing: 8,
+              runSpacing: 8,
               children: [
                 _cmdBtn('📞 Llámame', currentUser, tapped.uid),
                 _cmdBtn('✅ ¿Llegaste?', currentUser, tapped.uid),
@@ -232,20 +412,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _cmdBtn(String text, AppUser sender, String receiverId) {
     return ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.blue.shade700,
+        foregroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
       onPressed: () {
         ref.read(firestoreServiceProvider).sendAlert(sender, receiverId, 'command_message', text);
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Enviado: $text')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Enviado: \$text')));
       },
       child: Text(text),
-    );
-  }
-
-  void _toggleRole(AppUser user) {
-    final newRole = user.currentRole == 'central' ? 'miembro' : 'central';
-    ref.read(firestoreServiceProvider).updateUserRole(user.uid, newRole);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Rol cambiado a: ${newRole == 'central' ? 'Central' : 'Miembro'}')),
     );
   }
 
@@ -253,8 +430,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('🚨 ¿Activar S.O.S?'),
-        content: const Text('Se enviará una alerta de pánico a todo el grupo.'),
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('🚨 ¿Activar S.O.S?', style: TextStyle(color: Colors.white)),
+        content: const Text('Se enviará una alerta de pánico a todo el grupo.', style: TextStyle(color: Colors.white70)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
           ElevatedButton(

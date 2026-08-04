@@ -6,28 +6,59 @@ class AuthService {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
 
-  Stream<AppUser> get currentUserStream {
-    return _auth.authStateChanges().asyncMap((user) async {
-      if (user == null) throw Exception('No autenticado');
-      final doc = await _db.collection('users').doc(user.uid).get();
-      if (!doc.exists) {
-        final newUser = AppUser(uid: user.uid, email: user.email ?? '', role: 'miembro', currentRole: 'miembro');
-        await _db.collection('users').doc(user.uid).set(newUser.toMap());
-        return newUser;
-      }
-      return AppUser.fromMap(doc.data()!, user.uid);
+  String _emailFromName(String name) {
+    final clean = name.toLowerCase().trim().replaceAll(RegExp(r'[^a-z0-9]'), '_');
+    return '\${clean}@miclan.local';
+  }
+
+  Stream<AppUser?> get currentUserStream {
+    return _auth.authStateChanges().asyncExpand((user) {
+      if (user == null) return Stream.value(null);
+      return _db.collection('users').doc(user.uid).snapshots().map((doc) {
+        if (!doc.exists || doc.data() == null) {
+          final newUser = AppUser(
+            uid: user.uid,
+            email: user.email ?? '',
+            displayName: user.displayName ?? 'Usuario',
+            role: 'miembro',
+            currentRole: 'miembro',
+          );
+          _db.collection('users').doc(user.uid).set(newUser.toMap());
+          return newUser;
+        }
+        return AppUser.fromMap(doc.data()!, user.uid);
+      });
     });
   }
 
-  Future<AppUser> signIn(String email, String password) async {
-    final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
+  Future<AppUser> signIn(String name, String pin) async {
+    final email = _emailFromName(name);
+    final cred = await _auth.signInWithEmailAndPassword(email: email, password: pin);
     final doc = await _db.collection('users').doc(cred.user!.uid).get();
+    if (!doc.exists || doc.data() == null) {
+      final user = AppUser(
+        uid: cred.user!.uid,
+        email: email,
+        displayName: name.trim(),
+        role: 'miembro',
+        currentRole: 'miembro',
+      );
+      await _db.collection('users').doc(cred.user!.uid).set(user.toMap());
+      return user;
+    }
     return AppUser.fromMap(doc.data()!, cred.user!.uid);
   }
 
-  Future<AppUser> signUp(String email, String password) async {
-    final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
-    final user = AppUser(uid: cred.user!.uid, email: email, role: 'miembro', currentRole: 'miembro');
+  Future<AppUser> signUp(String name, String pin) async {
+    final email = _emailFromName(name);
+    final cred = await _auth.createUserWithEmailAndPassword(email: email, password: pin);
+    final user = AppUser(
+      uid: cred.user!.uid,
+      email: email,
+      displayName: name.trim(),
+      role: 'miembro',
+      currentRole: 'miembro',
+    );
     await _db.collection('users').doc(cred.user!.uid).set(user.toMap());
     return user;
   }

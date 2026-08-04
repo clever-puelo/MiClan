@@ -22,95 +22,92 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() => _batterySaver = prefs.getBool('battery_saver') ?? false);
+    if (mounted) setState(() => _batterySaver = prefs.getBool('battery_saver') ?? false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final user = ref.watch(currentUserProvider).value;
-    final group = ref.watch(currentGroupProvider).value;
-    final geofence = ref.watch(geofenceZoneProvider).value;
+    final user = ref.watch(currentUserProvider).valueOrNull;
+    final group = ref.watch(currentGroupProvider).valueOrNull;
+    final geofence = ref.watch(geofenceZoneProvider).valueOrNull;
     final isCentral = user?.currentRole == 'central';
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Configuración')),
+      backgroundColor: const Color(0xFF0F172A),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: const Text('Configuraci贸n', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(20),
         children: [
           _sectionTitle('Cuenta'),
-          _infoTile('Email', user?.email ?? '-'),
-          _infoTile('Rol actual', user?.currentRole == 'central' ? '?? Central' : '?? Miembro'),
-          const Divider(),
+          _glassTile(label: 'Nombre', value: user?.displayName ?? '-'),
+          _glassTile(label: 'Rol actual', value: user?.currentRole == 'central' ? 'Central' : 'Miembro'),
+          const SizedBox(height: 8),
+          _divider(),
           _sectionTitle('Grupo'),
-          _infoTile('Nombre', group?.name ?? 'Sin grupo'),
-          if (isCentral && group != null) _infoTile('Código de unión', group.joinCode),
-          const Divider(),
+          _glassTile(label: 'Nombre', value: group?.name ?? 'Sin grupo'),
+          if (isCentral && group != null) _glassTile(label: 'C贸digo', value: group.joinCode),
+          const SizedBox(height: 8),
+          _divider(),
           if (isCentral) ...[
-            _sectionTitle('?? Zona Segura (Geofencing)'),
+            _sectionTitle('Zona Segura'),
             if (geofence != null) ...[
-              _infoTile('Zona', '${geofence.name} (${geofence.radiusMeters}m)'),
-              ListTile(
-                leading: const Icon(Icons.delete, color: Colors.red),
-                title: const Text('Eliminar zona'),
-                onTap: () async {
-                  if (group != null) {
-                    await ref.read(firestoreServiceProvider).deleteGeofence(group.id);
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zona eliminada')));
-                  }
-                },
-              ),
+              _glassTile(label: 'Zona activa', value: '\${geofence.name} (\${geofence.radiusMeters}m)'),
+              _actionTile(icon: Icons.delete, text: 'Eliminar zona', color: Colors.red, onTap: () async {
+                if (group != null) {
+                  await ref.read(firestoreServiceProvider).deleteGeofence(group.id);
+                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zona eliminada')));
+                }
+              }),
             ] else ...[
-              ListTile(
-                leading: const Icon(Icons.add_location),
-                title: const Text('Crear zona segura'),
-                subtitle: const Text('Define un perímetro alrededor de tu ubicación actual'),
+              _actionTile(
+                icon: Icons.add_location,
+                text: 'Crear zona segura',
+                subtitle: 'Per铆metro alrededor de tu ubicaci贸n',
                 onTap: () => _showGeofenceDialog(group?.id ?? ''),
               ),
             ],
-            const Divider(),
+            _divider(),
           ],
-          _sectionTitle('?? Batería'),
+          _sectionTitle('Bater铆a'),
           SwitchListTile(
-            title: const Text('Modo ahorro de batería'),
-            subtitle: Text(_batterySaver ? 'GPS cada 5 min / 200m (ahorro)' : 'GPS cada 1 min / 50m (precisión)'),
+            title: const Text('Modo ahorro', style: TextStyle(color: Colors.white)),
+            subtitle: Text(
+              _batterySaver ? 'GPS cada 5 min / 200m' : 'GPS cada 1 min / 50m',
+              style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+            ),
             value: _batterySaver,
+            activeColor: Colors.blue,
             onChanged: (val) async {
               final prefs = await SharedPreferences.getInstance();
               await prefs.setBool('battery_saver', val);
               setState(() => _batterySaver = val);
             },
           ),
-          ListTile(
-            leading: const Icon(Icons.battery_alert),
-            title: const Text('Desactivar optimización de batería'),
-            subtitle: const Text('Evita que Android mate la app en segundo plano'),
+          _actionTile(
+            icon: Icons.battery_alert,
+            text: 'Desactivar optimizaci贸n',
+            subtitle: 'Evita que Android cierre la app',
             onTap: _openBatterySettings,
           ),
-          const Divider(),
-          _sectionTitle('?? Caja Negra'),
-          ListTile(
-            leading: const Icon(Icons.upload_file),
-            title: const Text('Exportar backup'),
-            onTap: () async {
-              await ref.read(backupServiceProvider).exportBackup();
-              if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backup exportado')));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.download),
-            title: const Text('Importar backup'),
-            onTap: () async {
-              final ok = await ref.read(backupServiceProvider).importBackup();
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'Backup importado' : 'Error al importar')));
-              }
-            },
-          ),
-          const Divider(),
-          _sectionTitle('Sesión'),
-          ListTile(
-            leading: const Icon(Icons.swap_horiz),
-            title: const Text('Cambiar de grupo'),
+          _divider(),
+          _sectionTitle('Caja Negra'),
+          _actionTile(icon: Icons.upload_file, text: 'Exportar backup', onTap: () async {
+            await ref.read(backupServiceProvider).exportBackup();
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backup exportado')));
+          }),
+          _actionTile(icon: Icons.download, text: 'Importar backup', onTap: () async {
+            final ok = await ref.read(backupServiceProvider).importBackup();
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'Backup importado' : 'Error')));
+          }),
+          _divider(),
+          _sectionTitle('Sesi贸n'),
+          _actionTile(
+            icon: Icons.swap_horiz,
+            text: 'Cambiar de grupo',
             onTap: () async {
               if (user != null) {
                 await ref.read(firestoreServiceProvider).leaveGroup(user.uid);
@@ -118,9 +115,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               }
             },
           ),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title: const Text('Cerrar sesión', style: TextStyle(color: Colors.red)),
+          _actionTile(
+            icon: Icons.logout,
+            text: 'Cerrar sesi贸n',
+            color: Colors.red,
             onTap: () async {
               await ref.read(authServiceProvider).signOut();
             },
@@ -132,33 +130,64 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Widget _sectionTitle(String title) {
     return Padding(
-      padding: const EdgeInsets.only(top: 12, bottom: 4),
-      child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
+      padding: const EdgeInsets.only(top: 16, bottom: 8),
+      child: Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.blue.shade300)),
     );
   }
 
-  Widget _infoTile(String label, String value) {
-    return ListTile(
-      title: Text(label, style: const TextStyle(fontSize: 13, color: Colors.grey)),
-      subtitle: Text(value, style: const TextStyle(fontSize: 15)),
+  Widget _glassTile({required String label, required String value}) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        color: Colors.white.withOpacity(0.05),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      child: Row(
+        children: [
+          Text(label, style: TextStyle(fontSize: 13, color: Colors.white.withOpacity(0.5))),
+          const Spacer(),
+          Text(value, style: const TextStyle(fontSize: 14, color: Colors.white, fontWeight: FontWeight.w500)),
+        ],
+      ),
     );
   }
+
+  Widget _actionTile({required IconData icon, required String text, String? subtitle, Color? color, required VoidCallback onTap}) {
+    return ListTile(
+      leading: Icon(icon, color: color ?? Colors.blue.shade300),
+      title: Text(text, style: TextStyle(color: color ?? Colors.white)),
+      subtitle: subtitle != null ? Text(subtitle, style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12)) : null,
+      onTap: onTap,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    );
+  }
+
+  Widget _divider() => Divider(color: Colors.white.withOpacity(0.08), height: 32);
 
   void _showGeofenceDialog(String groupId) {
     final nameCtrl = TextEditingController(text: 'Casa');
     final radiusCtrl = TextEditingController(text: '200');
-
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Nueva Zona Segura'),
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Nueva Zona', style: TextStyle(color: Colors.white)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
-            TextField(controller: radiusCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Radio (metros)')),
-            const SizedBox(height: 8),
-            const Text('La zona se centrará en tu ubicación actual', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            TextField(
+              controller: nameCtrl,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(labelText: 'Nombre', labelStyle: TextStyle(color: Colors.white.withOpacity(0.5))),
+            ),
+            TextField(
+              controller: radiusCtrl,
+              style: const TextStyle(color: Colors.white),
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(labelText: 'Radio (m)', labelStyle: TextStyle(color: Colors.white.withOpacity(0.5))),
+            ),
           ],
         ),
         actions: [
@@ -168,7 +197,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               final pos = await ref.read(locationServiceProvider).getCurrentPosition();
               if (pos != null) {
                 final zone = GeofenceZone(
-                  lat: pos.latitude, lng: pos.longitude,
+                  lat: pos.latitude,
+                  lng: pos.longitude,
                   radiusMeters: double.tryParse(radiusCtrl.text) ?? 200,
                   name: nameCtrl.text.isEmpty ? 'Zona' : nameCtrl.text,
                 );
@@ -191,7 +221,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       );
       intent.launch();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se pudo abrir configuración de batería')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir configuraci贸n')),
+      );
     }
   }
 }

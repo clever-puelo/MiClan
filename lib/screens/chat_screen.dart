@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -16,11 +17,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _textCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   final _audioPlayer = AudioPlayer();
+  StreamSubscription? _audioSub;
   String? _playingUrl;
   bool _isRecording = false;
 
   @override
+  void initState() {
+    super.initState();
+    _audioSub = _audioPlayer.onPlayerComplete.listen((_) {
+      if (mounted) setState(() => _playingUrl = null);
+    });
+  }
+
+  @override
   void dispose() {
+    _audioSub?.cancel();
     _textCtrl.dispose();
     _scrollCtrl.dispose();
     _audioPlayer.dispose();
@@ -29,74 +40,92 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final user = ref.watch(currentUserProvider).value;
+    final user = ref.watch(currentUserProvider).valueOrNull;
     final alertsAsync = ref.watch(groupAlertsProvider);
 
-    if (user == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (user == null) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0F172A),
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Chat del Grupo')),
+      backgroundColor: const Color(0xFF0F172A),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: const Text('Chat del Grupo', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
       body: Column(
         children: [
           Expanded(
             child: alertsAsync.when(
               data: (alerts) {
                 if (alerts.isEmpty) {
-                  return const Center(child: Text('No hay mensajes aún', style: TextStyle(color: Colors.grey)));
+                  return const Center(
+                    child: Text('No hay mensajes aún', style: TextStyle(color: Colors.white38)),
+                  );
                 }
-                final reversed = alerts.reversed.toList();
+                // FIX: reverse:true pone el último mensaje abajo
                 return ListView.builder(
                   controller: _scrollCtrl,
+                  reverse: true,
                   padding: const EdgeInsets.all(12),
-                  itemCount: reversed.length,
-                  itemBuilder: (ctx, i) => _buildBubble(reversed[i], user),
+                  itemCount: alerts.length,
+                  itemBuilder: (ctx, i) => _buildBubble(alerts[i], user),
                 );
               },
               loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('Error: $e')),
+              error: (e, _) => Center(child: Text('Error: \$e', style: const TextStyle(color: Colors.white70))),
             ),
           ),
+          // Input cristal abajo
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              border: Border(top: BorderSide(color: Colors.grey.shade300)),
+              color: Colors.white.withOpacity(0.05),
+              border: Border(top: BorderSide(color: Colors.white.withOpacity(0.1))),
             ),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.camera_alt, color: Colors.blue),
-                  onPressed: () => _sendPhoto(user),
-                  tooltip: 'Enviar foto',
-                ),
-                GestureDetector(
-                  onLongPressStart: (_) => _startRecording(user),
-                  onLongPressEnd: (_) => _stopRecording(user),
-                  child: Icon(
-                    _isRecording ? Icons.stop_circle : Icons.mic,
-                    color: _isRecording ? Colors.red : Colors.green,
-                    size: 28,
+            child: SafeArea(
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.camera_alt, color: Colors.blue),
+                    onPressed: () => _sendPhoto(user),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _textCtrl,
-                    decoration: InputDecoration(
-                      hintText: 'Escribe un mensaje...',
-                      filled: true, fillColor: Colors.white,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(24)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  GestureDetector(
+                    onLongPressStart: (_) => _startRecording(user),
+                    onLongPressEnd: (_) => _stopRecording(user),
+                    child: Icon(
+                      _isRecording ? Icons.stop_circle : Icons.mic,
+                      color: _isRecording ? Colors.red : Colors.green,
                     ),
-                    maxLines: 3, minLines: 1,
                   ),
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  icon: const Icon(Icons.send, color: Colors.blue),
-                  onPressed: () => _sendText(user),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _textCtrl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Escribe un mensaje...',
+                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.05),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      ),
+                      maxLines: 3,
+                      minLines: 1,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    icon: const Icon(Icons.send, color: Colors.blue),
+                    onPressed: () => _sendText(user),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -108,18 +137,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final isMine = alert.senderId == currentUser.uid;
     final isSOS = alert.type == 'SOS';
     final time = DateFormat('HH:mm').format(alert.timestamp);
+    final senderName = alert.senderName ?? 'Miembro';
 
     if (isSOS) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Center(
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             decoration: BoxDecoration(
-              color: Colors.red.shade100, borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.red),
+              color: Colors.red.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.red.withOpacity(0.5)),
+              boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.3), blurRadius: 15)],
             ),
-            child: Text('🚨 ${alert.payload}', style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+            child: Text(
+              '🚨 \${alert.payload}',
+              style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 14),
+            ),
           ),
         ),
       );
@@ -130,9 +165,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Center(
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(8)),
-            child: Text('📍 ${alert.payload}', style: TextStyle(fontSize: 12, color: Colors.orange.shade800)),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.orange.withOpacity(0.3)),
+            ),
+            child: Text(
+              '📍 \${alert.payload}',
+              style: TextStyle(fontSize: 12, color: Colors.orange.shade200),
+            ),
           ),
         ),
       );
@@ -141,42 +183,62 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return Align(
       alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
         decoration: BoxDecoration(
-          color: isMine ? Colors.blue.shade100 : Colors.grey.shade200,
+          color: isMine
+              ? Colors.blue.withOpacity(0.2)
+              : Colors.white.withOpacity(0.08),
           borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(12), topRight: const Radius.circular(12),
-            bottomLeft: Radius.circular(isMine ? 12 : 0),
-            bottomRight: Radius.circular(isMine ? 0 : 12),
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isMine ? 16 : 4),
+            bottomRight: Radius.circular(isMine ? 4 : 16),
+          ),
+          border: Border.all(
+            color: isMine
+                ? Colors.blue.withOpacity(0.3)
+                : Colors.white.withOpacity(0.1),
           ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // FIX: Nombre - (mensaje)
             if (!isMine)
-              Text(alert.senderName ?? 'Miembro', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.blue.shade700)),
-            const SizedBox(height: 2),
+              Text(
+                '\$senderName -',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue.shade300,
+                ),
+              ),
+            const SizedBox(height: 3),
             if (alert.type == 'photo') ...[
               ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
                 child: CachedNetworkImage(
                   imageUrl: alert.payload,
-                  placeholder: (_, __) => const SizedBox(height: 100, child: Center(child: CircularProgressIndicator())),
-                  errorWidget: (_, __, ___) => const Icon(Icons.broken_image, size: 50),
-                  width: 200, fit: BoxFit.cover,
+                  placeholder: (_, __) => const SizedBox(
+                    height: 100,
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                  errorWidget: (_, __, ___) => const Icon(Icons.broken_image, size: 50, color: Colors.white54),
+                  width: 200,
+                  fit: BoxFit.cover,
                 ),
               ),
             ] else if (alert.type == 'audio') ...[
               _buildAudioPlayer(alert.payload),
             ] else ...[
-              Text(alert.payload, style: const TextStyle(fontSize: 14)),
+              Text(alert.payload, style: const TextStyle(fontSize: 14, color: Colors.white)),
             ],
-            const SizedBox(height: 2),
+            const SizedBox(height: 4),
             Align(
               alignment: Alignment.bottomRight,
-              child: Text(time, style: TextStyle(fontSize: 10, color: Colors.grey.shade600)),
+              child: Text(time, style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.4))),
             ),
           ],
         ),
@@ -190,7 +252,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
-          icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
+          icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
           onPressed: () async {
             if (isPlaying) {
               await _audioPlayer.pause();
@@ -198,13 +260,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             } else {
               await _audioPlayer.play(UrlSource(url));
               setState(() => _playingUrl = url);
-              _audioPlayer.onPlayerComplete.listen((_) {
-                if (mounted) setState(() => _playingUrl = null);
-              });
             }
           },
         ),
-        const Text('🎤 Audio', style: TextStyle(fontSize: 12)),
+        const Text('🎤 Audio', style: TextStyle(fontSize: 12, color: Colors.white70)),
       ],
     );
   }

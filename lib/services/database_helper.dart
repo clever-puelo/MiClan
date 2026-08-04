@@ -19,12 +19,8 @@ class DatabaseHelper {
   }
 
   _onCreate(Database db, int version) async {
-    await db.execute('''CREATE TABLE locations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, lat REAL, lng REAL,
-      timestamp TEXT, synced INTEGER DEFAULT 0)''');
-    await db.execute('''CREATE TABLE alerts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, alert_data TEXT,
-      timestamp TEXT, synced INTEGER DEFAULT 0)''');
+    await db.execute('''CREATE TABLE locations (id INTEGER PRIMARY KEY AUTOINCREMENT, lat REAL, lng REAL, timestamp TEXT, synced INTEGER DEFAULT 0)''');
+    await db.execute('''CREATE TABLE alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, alert_data TEXT, timestamp TEXT, synced INTEGER DEFAULT 0)''');
   }
 
   Future<void> insertLocation(double lat, double lng) async {

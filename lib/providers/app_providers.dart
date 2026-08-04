@@ -15,16 +15,18 @@ final storageServiceProvider = Provider((ref) => StorageService());
 final geofenceServiceProvider = Provider((ref) => GeofenceService());
 final backupServiceProvider = Provider((ref) => BackupService());
 
-final currentUserProvider = StreamProvider<AppUser>((ref) => ref.watch(authServiceProvider).currentUserStream);
+final currentUserProvider = StreamProvider<AppUser?>((ref) {
+  return ref.watch(authServiceProvider).currentUserStream;
+});
 
 final currentGroupProvider = StreamProvider<AppGroup?>((ref) {
-  final user = ref.watch(currentUserProvider).value;
+  final user = ref.watch(currentUserProvider).valueOrNull;
   if (user?.groupId == null) return const Stream.empty();
   return ref.watch(firestoreServiceProvider).getGroupStream(user!.groupId!);
 });
 
 final groupMembersProvider = StreamProvider<List<AppUser>>((ref) {
-  final group = ref.watch(currentGroupProvider).value;
+  final group = ref.watch(currentGroupProvider).valueOrNull;
   if (group == null) return const Stream.empty();
   return ref.watch(firestoreServiceProvider).getGroupMembersStream(group.id);
 });
@@ -34,13 +36,13 @@ final memberLocationProvider = StreamProvider.family<LatLng?, String>((ref, uid)
 });
 
 final groupAlertsProvider = StreamProvider<List<AppAlert>>((ref) {
-  final group = ref.watch(currentGroupProvider).value;
+  final group = ref.watch(currentGroupProvider).valueOrNull;
   if (group == null) return const Stream.empty();
   return ref.watch(firestoreServiceProvider).getGroupAlertsStream(group.id);
 });
 
 final geofenceZoneProvider = StreamProvider<GeofenceZone?>((ref) {
-  final group = ref.watch(currentGroupProvider).value;
+  final group = ref.watch(currentGroupProvider).valueOrNull;
   if (group == null) return const Stream.empty();
   return ref.watch(firestoreServiceProvider).getGeofenceStream(group.id);
 });

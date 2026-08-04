@@ -5,6 +5,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'firebase_options.dart';
+import 'models/app_models.dart';
 import 'providers/app_providers.dart';
 import 'screens/auth_screen.dart';
 import 'screens/onboarding_screen.dart';
@@ -32,23 +33,37 @@ class MiClanApp extends ConsumerStatefulWidget {
 
 class _MiClanAppState extends ConsumerState<MiClanApp> {
   late final GoRouter _router;
+  final _authListener = ValueNotifier<AsyncValue<AppUser?>>(const AsyncValue.loading());
 
   @override
   void initState() {
     super.initState();
     _setupFCM();
 
+    ref.listenManual(currentUserProvider, (prev, next) {
+      _authListener.value = next;
+    });
+
     _router = GoRouter(
       initialLocation: '/',
+      refreshListenable: _authListener,
       redirect: (context, state) {
-        final user = ref.read(currentUserProvider).value;
+        final userAsync = _authListener.value;
+        final path = state.matchedLocation;
+
+        if (userAsync.isLoading) {
+          return path == '/' ? null : path;
+        }
+
+        final user = userAsync.value;
         final isLoggedIn = user != null;
         final hasGroup = user?.groupId != null;
-        final path = state.matchedLocation;
 
         if (!isLoggedIn && path != '/login') return '/login';
         if (isLoggedIn && !hasGroup && path != '/onboarding') return '/onboarding';
-        if (isLoggedIn && hasGroup && (path == '/login' || path == '/onboarding' || path == '/')) return '/home';
+        if (isLoggedIn && hasGroup && (path == '/login' || path == '/onboarding' || path == '/')) {
+          return '/home';
+        }
         return null;
       },
       routes: [
@@ -66,26 +81,31 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
     final messaging = FirebaseMessaging.instance;
     await messaging.requestPermission(alert: true, badge: true, sound: true);
     final token = await messaging.getToken();
-    final user = ref.read(currentUserProvider).value;
+    final user = ref.read(currentUserProvider).valueOrNull;
     if (token != null && user != null) {
       await ref.read(authServiceProvider).updateFcmToken(user.uid, token);
     }
     messaging.onTokenRefresh.listen((newToken) async {
-      final u = ref.read(currentUserProvider).value;
+      final u = ref.read(currentUserProvider).valueOrNull;
       if (u != null) await ref.read(authServiceProvider).updateFcmToken(u.uid, newToken);
     });
   }
 
   @override
-  Widget build(BuildContext context) {
-    ref.listen(currentUserProvider, (_, __) => _router.refresh());
+  void dispose() {
+    _authListener.dispose();
+    super.dispose();
+  }
 
+  @override
+  Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'MiClan',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1976D2)),
-        textTheme: GoogleFonts.robotoTextTheme(),
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0F172A),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF3B82F6), brightness: Brightness.dark),
+        textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
         useMaterial3: true,
       ),
       routerConfig: _router,

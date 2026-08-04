@@ -22,16 +22,12 @@ class LocationService {
 
   Future<void> startTracking(String uid, String groupId) async {
     if (!await checkPermissions()) return;
-
     const locationSettings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10);
-
     Geolocator.getPositionStream(locationSettings: locationSettings).listen((position) async {
       await _db.insertLocation(position.latitude, position.longitude);
-
       final prefs = await SharedPreferences.getInstance();
       final batterySaver = prefs.getBool('battery_saver') ?? false;
       final minDistance = batterySaver ? 200.0 : 50.0;
-
       bool shouldUpload = false;
       if (_lastPosition == null) {
         shouldUpload = true;
@@ -39,7 +35,6 @@ class LocationService {
         final distance = Geolocator.distanceBetween(_lastPosition!.latitude, _lastPosition!.longitude, position.latitude, position.longitude);
         shouldUpload = distance > minDistance;
       }
-
       if (shouldUpload) {
         await _firestore.updateLocation(uid, groupId, position.latitude, position.longitude);
         _lastPosition = position;
@@ -61,8 +56,6 @@ class LocationService {
   Future<Position?> getCurrentPosition() async {
     try {
       return await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 }
