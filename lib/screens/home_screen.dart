@@ -552,8 +552,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  void _logout() async {
-    await ref.read(authServiceProvider).signOut();
+  Future<void> _logout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Cerrar sesion?', style: TextStyle(color: Colors.white)),
+        content: const Text('Volveras a la pantalla de login.', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Salir', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await ref.read(authServiceProvider).signOut();
+    }
   }
 
   void _showMembersSheet(BuildContext context, List<AppUser> members, bool isAdmin, AppGroup? group, AppUser currentUser) {

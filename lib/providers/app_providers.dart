@@ -7,6 +7,7 @@ import '../services/location_service.dart';
 import '../services/storage_service.dart';
 import '../services/geofence_service.dart';
 import '../services/backup_service.dart';
+import '../services/notification_service.dart';
 
 final authServiceProvider = Provider((ref) => AuthService());
 final firestoreServiceProvider = Provider((ref) => FirestoreService());
@@ -57,17 +58,4 @@ final geofenceZoneProvider = StreamProvider<GeofenceZone?>((ref) {
   final group = ref.watch(currentGroupProvider).valueOrNull;
   if (group == null) return Stream.value(null);
   return ref.watch(firestoreServiceProvider).getGeofenceStream(group.id);
-});
-
-// Verifica que el sessionId local coincida con el de Firestore
-// Si otro dispositivo se logueo con la misma cuenta, fuerza logout
-final sessionCheckProvider = StreamProvider<bool>((ref) {
-  final user = ref.watch(currentUserProvider).valueOrNull;
-  if (user == null) return Stream.value(true);
-  return ref.watch(authServiceProvider).currentUserStream.map((fbUser) {
-    if (fbUser == null) return true;
-    // No podemos comparar sessionId aqui porque no tenemos acceso al local
-    // La comparacion se hace en main.dart
-    return true;
-  });
 });

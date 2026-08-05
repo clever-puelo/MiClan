@@ -64,13 +64,9 @@ class FirestoreService {
   }
 
   Future<void> removeMember(String groupId, String memberUid, String adminName) async {
-    // Quitar groupId del miembro
     await _db.collection('users').doc(memberUid).update({
       'groupId': FieldValue.delete(),
     });
-    // Borrar su ubicacion
-    await _db.collection('locations').doc(memberUid).delete();
-    // Enviar alerta de expulsion al grupo
     await _db.collection('alerts').add({
       'groupId': groupId,
       'senderId': 'system',
@@ -83,11 +79,7 @@ class FirestoreService {
 
   Future<void> leaveGroup(String uid, String? groupId, bool isOwner) async {
     if (groupId == null) return;
-
-    if (isOwner) {
-      await _deleteGroup(groupId);
-    }
-
+    if (isOwner) await _deleteGroup(groupId);
     await _db.collection('users').doc(uid).update({
       'groupId': FieldValue.delete(),
     });
@@ -191,6 +183,7 @@ class FirestoreService {
     });
   }
 
+  /// Guarda la alerta en Firestore. La Cloud Function se encarga del envio push.
   Future<String> sendAlert(
     AppUser sender,
     String receiverId,
@@ -199,6 +192,7 @@ class FirestoreService {
     String? senderName,
   }) async {
     if (sender.groupId == null) return '';
+
     final doc = await _db.collection('alerts').add({
       'groupId': sender.groupId,
       'senderId': sender.uid,
@@ -209,6 +203,7 @@ class FirestoreService {
       'timestamp': FieldValue.serverTimestamp(),
       'sosStatus': type == 'SOS' ? 'active' : null,
     });
+
     await _rotateAlerts(sender.groupId!);
     return doc.id;
   }
@@ -256,7 +251,9 @@ class FirestoreService {
         .orderBy('timestamp', descending: true)
         .limit(1)
         .snapshots()
-        .map((snap) => snap.docs.isNotEmpty ? AppAlert.fromMap(snap.docs.first.data(), snap.docs.first.id) : null);
+        .map((snap) => snap.docs.isNotEmpty
+            ? AppAlert.fromMap(snap.docs.first.data(), snap.docs.first.id)
+            : null);
   }
 
   Future<void> saveGeofence(String groupId, GeofenceZone zone) async {

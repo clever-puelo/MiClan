@@ -13,6 +13,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _batterySaver = false;
+  final _serverKeyCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -22,7 +23,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
-    if (mounted) setState(() => _batterySaver = prefs.getBool('battery_saver') ?? false);
+    if (mounted) {
+      setState(() {
+        _batterySaver = prefs.getBool('battery_saver') ?? false;
+        _serverKeyCtrl.text = prefs.getString('fcm_server_key') ?? '';
+      });
+    }
   }
 
   @override
@@ -92,6 +98,54 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             text: 'Desactivar optimizacion',
             subtitle: 'Evita que Android cierre la app',
             onTap: _openBatterySettings,
+          ),
+          _divider(),
+          _sectionTitle('Notificaciones Push'),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              color: Colors.white.withOpacity(0.05),
+              border: Border.all(color: Colors.white.withOpacity(0.1)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Server Key FCM (opcional)',
+                  style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _serverKeyCtrl,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: InputDecoration(
+                    hintText: 'Pega aqui tu Server Key de Firebase',
+                    hintStyle: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 12),
+                    filled: true,
+                    fillColor: Colors.white.withOpacity(0.05),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.save, color: Colors.blue),
+                      onPressed: () async {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setString('fcm_server_key', _serverKeyCtrl.text.trim());
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Server Key guardada')),
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Necesaria para notificaciones push. La encontras en Firebase Console > Project Settings > Cloud Messaging.',
+                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 10),
+                ),
+              ],
+            ),
           ),
           _divider(),
           _sectionTitle('Caja Negra'),

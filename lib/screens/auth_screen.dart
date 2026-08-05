@@ -56,10 +56,19 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                         ),
                       ],
                     ),
-                    child: const Icon(
-                      Icons.family_restroom,
-                      size: 50,
-                      color: Colors.white,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(28),
+                      child: Image.asset(
+                        'assets/images/app_logo.png',
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return const Icon(
+                            Icons.family_restroom,
+                            size: 50,
+                            color: Colors.white,
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
