@@ -163,13 +163,26 @@ class FirestoreService {
     double lat,
     double lng,
   ) async {
-    await _db.collection('locations').doc(uid).set({
+    final now = DateTime.now();
+    final data = {
       'groupId': groupId,
       'lat': lat,
       'lng': lng,
       'timestamp': FieldValue.serverTimestamp(),
-      'updatedAt': DateTime.now().toIso8601String(),
-    }, SetOptions(merge: true));
+      'updatedAt': now.toIso8601String(),
+    };
+
+    // Ubicacion actual (para el mapa en tiempo real)
+    await _db.collection('locations').doc(uid).set(data, SetOptions(merge: true));
+
+    // NUEVO: Guardar en historial para la caja negra del admin
+    await _db.collection('locations').doc(uid).collection('history').add({
+      'groupId': groupId,
+      'lat': lat,
+      'lng': lng,
+      'timestamp': FieldValue.serverTimestamp(),
+      'recordedAt': now.toIso8601String(),
+    });
   }
 
   Stream<LatLng?> getLocationStream(String uid) {
@@ -183,7 +196,22 @@ class FirestoreService {
     });
   }
 
-  /// Guarda la alerta en Firestore. La Cloud Function se encarga del envio push.
+  /// NUEVO: Obtener historial de ubicaciones de un miembro desde una fecha.
+  Stream<List<Map<String, dynamic>>> getLocationHistoryStream(String uid, DateTime since) {
+    return _db
+        .collection('locations')
+        .doc(uid)
+        .collection('history')
+        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+        .orderBy('timestamp', descending: true)
+        .snapshots()
+        .map((snap) => snap.docs.map((d) {
+          final data = d.data();
+          data['docId'] = d.id;
+          return data;
+        }).toList());
+  }
+
   Future<String> sendAlert(
     AppUser sender,
     String receiverId,

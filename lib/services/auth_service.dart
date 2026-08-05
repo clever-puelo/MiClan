@@ -64,7 +64,6 @@ class AuthService {
     }
     final user = AppUser.fromMap(doc.data()!, cred.user!.uid);
 
-    // Generar sessionId unico para este dispositivo
     final sessionId = _generateSessionId();
     await _db.collection('users').doc(user.uid).update({'sessionId': sessionId});
 
@@ -95,6 +94,13 @@ class AuthService {
       email: cleanEmail,
       password: password.trim(),
     );
+
+    // FIX PERMISOS: Forzar refresh del token de ID antes de escribir en Firestore.
+    // Firebase Auth tarda unos ms en propagar el token despues de createUser.
+    // Sin esto, Firestore Rules rechaza la escritura con "permission-denied".
+    await cred.user!.getIdToken(true);
+    await Future.delayed(const Duration(milliseconds: 300));
+
     final user = AppUser(
       uid: cred.user!.uid,
       email: cleanEmail,

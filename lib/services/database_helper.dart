@@ -80,6 +80,18 @@ class DatabaseHelper {
     return await db.query('locations', orderBy: 'timestamp DESC');
   }
 
+  /// NUEVO: Obtener ubicaciones de los ultimos N dias (local).
+  Future<List<Map<String, dynamic>>> getLocationsLastDays(int days) async {
+    final db = await database;
+    final since = DateTime.now().subtract(Duration(days: days)).toIso8601String();
+    return await db.query(
+      'locations',
+      where: 'timestamp >= ?',
+      whereArgs: [since],
+      orderBy: 'timestamp DESC',
+    );
+  }
+
   Future<void> _rotateLocations(String? groupId) async {
     final db = await database;
     final count = Sqflite.firstIntValue(await db.rawQuery(

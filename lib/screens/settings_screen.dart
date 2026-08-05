@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:android_intent_plus/android_intent.dart';
+import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
+import '../services/firestore_service.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
   @override
-  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+  ConsumerState createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
@@ -76,6 +79,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 onTap: () => _showGeofenceDialog(group?.id ?? ''),
               ),
             ],
+            _divider(),
+            // NUEVO: Boton Caja Negra del Grupo (solo admin)
+            _sectionTitle('Caja Negra del Grupo'),
+            _actionTile(
+              icon: Icons.table_chart,
+              text: 'Ver movimientos del grupo',
+              subtitle: 'Historial de ubicaciones ultimos 7 dias',
+              color: Colors.amber.shade400,
+              onTap: () => _showBlackBoxDialog(context, group!, user!),
+            ),
             _divider(),
           ],
           _sectionTitle('Bateria'),
@@ -167,7 +180,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               if (user == null || group == null) return;
               final isOwner = user.uid == group.ownerId;
               if (isOwner) {
-                final confirm = await showDialog<bool>(
+                final confirm = await showDialog(
                   context: context,
                   builder: (ctx) => AlertDialog(
                     backgroundColor: const Color(0xFF1E293B),
@@ -195,7 +208,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             text: 'Eliminar cuenta permanentemente',
             color: Colors.red,
             onTap: () async {
-              final confirm = await showDialog<bool>(
+              final confirm = await showDialog(
                 context: context,
                 builder: (ctx) => AlertDialog(
                   backgroundColor: const Color(0xFF1E293B),
@@ -232,6 +245,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  void _showBlackBoxDialog(BuildContext context, AppGroup group, AppUser adminUser) {
+    showDialog(
+      context: context,
+      builder: (ctx) => _BlackBoxDialog(group: group, adminUser: adminUser),
     );
   }
 
@@ -332,5 +352,257 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         const SnackBar(content: Text('No se pudo abrir configuracion')),
       );
     }
+  }
+}
+
+// Dialog interno para la Caja Negra del Grupo
+class _BlackBoxDialog extends ConsumerStatefulWidget {
+  final AppGroup group;
+  final AppUser adminUser;
+
+  const _BlackBoxDialog({required this.group, required this.adminUser});
+
+  @override
+  ConsumerState<_BlackBoxDialog> createState() => _BlackBoxDialogState();
+}
+
+class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
+  String? _selectedMemberUid;
+
+  @override
+  Widget build(BuildContext context) {
+    final membersAsync = ref.watch(groupMembersProvider);
+
+    return Dialog(
+      backgroundColor: const Color(0xFF0F172A),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      insetPadding: const EdgeInsets.all(16),
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
+        ),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.table_chart, color: Colors.amber.shade400, size: 28),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    'Caja Negra del Grupo',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white70),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Movimientos ultimos 7 dias',
+              style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+
+            membersAsync.when(
+              data: (members) {
+                final items = members
+                    .where((m) => m.uid != widget.adminUser.uid)
+                    .map((m) => DropdownMenuItem(
+                          value: m.uid,
+                          child: Text(m.displayName, style: const TextStyle(color: Colors.white)),
+                        ))
+                    .toList();
+
+                items.insert(
+                  0,
+                  DropdownMenuItem(
+                    value: widget.adminUser.uid,
+                    child: Text('${widget.adminUser.displayName} (Yo)', style: const TextStyle(color: Colors.white)),
+                  ),
+                );
+
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.white.withOpacity(0.05),
+                    border: Border.all(color: Colors.white.withOpacity(0.1)),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      dropdownColor: const Color(0xFF1E293B),
+                      hint: const Text('Seleccionar miembro...', style: TextStyle(color: Colors.white54)),
+                      value: _selectedMemberUid,
+                      icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
+                      onChanged: (val) => setState(() => _selectedMemberUid = val),
+                      items: items,
+                    ),
+                  ),
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (_, __) => const Text('Error cargando miembros', style: TextStyle(color: Colors.red)),
+            ),
+
+            const SizedBox(height: 16),
+
+            if (_selectedMemberUid != null)
+              Expanded(child: _buildMovementsList(_selectedMemberUid!))
+            else
+              Expanded(
+                child: Center(
+                  child: Text(
+                    'Selecciona un miembro para ver sus movimientos',
+                    style: TextStyle(color: Colors.white.withOpacity(0.4)),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMovementsList(String memberUid) {
+    final since = DateTime.now().subtract(const Duration(days: 7));
+    final firestore = ref.read(firestoreServiceProvider);
+
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: firestore.getLocationHistoryStream(memberUid, since),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return Center(
+            child: Text(
+              'Error: ${snapshot.error}',
+              style: const TextStyle(color: Colors.redAccent),
+            ),
+          );
+        }
+
+        final movements = snapshot.data ?? [];
+        if (movements.isEmpty) {
+          return Center(
+            child: Text(
+              'No hay movimientos registrados\npara este miembro en los ultimos 7 dias.',
+              style: TextStyle(color: Colors.white.withOpacity(0.4)),
+              textAlign: TextAlign.center,
+            ),
+          );
+        }
+
+        return Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.15),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                border: Border.all(color: Colors.blue.withOpacity(0.3)),
+              ),
+              child: const Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: Text('Fecha', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                  ),
+                  Expanded(
+                    flex: 2,
+                    child: Text('Hora', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                  ),
+                  Expanded(
+                    flex: 5,
+                    child: Text('Coordenada', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: movements.length,
+                itemBuilder: (ctx, i) {
+                  final m = movements[i];
+                  final ts = m['timestamp'];
+                  DateTime dt;
+                  if (ts is Timestamp) {
+                    dt = ts.toDate();
+                  } else if (ts is String) {
+                    dt = DateTime.tryParse(ts) ?? DateTime.now();
+                  } else {
+                    dt = DateTime.now();
+                  }
+
+                  final lat = (m['lat'] as num?)?.toDouble() ?? 0.0;
+                  final lng = (m['lng'] as num?)?.toDouble() ?? 0.0;
+
+                  final isEven = i % 2 == 0;
+
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isEven ? Colors.white.withOpacity(0.03) : Colors.transparent,
+                      border: Border(
+                        bottom: BorderSide(color: Colors.white.withOpacity(0.06)),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Text(
+                            DateFormat('dd/MM/yy').format(dt),
+                            style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 12),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            DateFormat('HH:mm').format(dt),
+                            style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 12),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 5,
+                          child: Text(
+                            '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}',
+                            style: TextStyle(
+                              color: Colors.amber.shade300,
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              alignment: Alignment.centerRight,
+              child: Text(
+                '${movements.length} registros',
+                style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 }

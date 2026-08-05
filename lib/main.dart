@@ -24,11 +24,14 @@ Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
   final title = message.notification?.title ?? 'MiClan';
   final body = message.notification?.body ?? 'Nuevo mensaje';
 
+  // ID fijo para SOS para que se reemplace si hay otro SOS activo
+  final id = type == 'SOS' ? 9999 : DateTime.now().millisecond;
+
   await NotificationService.showLocalNotification(
     title: title,
     body: body,
     channelId: type == 'SOS' ? 'sos_channel' : 'msg_channel',
-    id: DateTime.now().millisecond,
+    id: id,
   );
 }
 
@@ -43,7 +46,7 @@ void main() async {
 class MiClanApp extends ConsumerStatefulWidget {
   const MiClanApp({super.key});
   @override
-  ConsumerState<MiClanApp> createState() => _MiClanAppState();
+  ConsumerState createState() => _MiClanAppState();
 }
 
 class _MiClanAppState extends ConsumerState<MiClanApp> {
@@ -64,6 +67,12 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       _authListener.value = next;
 
       final user = next.value;
+
+      // CORRECCION: Guardar token FCM cuando el usuario se loguea
+      if (user != null) {
+        await _saveFcmToken();
+      }
+
       if (user != null && session != null && user.sessionId != null) {
         if (user.sessionId != session.sessionId) {
           await ref.read(authServiceProvider).signOut();
@@ -133,7 +142,7 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
         title: title,
         body: body,
         channelId: type == 'SOS' ? 'sos_channel' : 'msg_channel',
-        id: DateTime.now().millisecond,
+        id: type == 'SOS' ? 9999 : DateTime.now().millisecond,
       );
     });
 
@@ -155,11 +164,17 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
   /// Guarda el token FCM en Firestore asociado al usuario logueado.
   Future<void> _saveFcmToken([String? token]) async {
     final t = token ?? await FirebaseMessaging.instance.getToken();
-    if (t == null) return;
+    if (t == null) {
+      debugPrint('FCM: No se pudo obtener token');
+      return;
+    }
 
     final user = ref.read(currentUserProvider).valueOrNull;
     if (user != null) {
       await ref.read(authServiceProvider).updateFcmToken(user.uid, t);
+      debugPrint('FCM Token guardado en Firestore para ${user.displayName}');
+    } else {
+      debugPrint('FCM: Usuario aun no cargado, token pendiente...');
     }
   }
 

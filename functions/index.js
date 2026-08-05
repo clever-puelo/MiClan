@@ -3,76 +3,120 @@ const admin = require('firebase-admin');
 
 admin.initializeApp();
 
-exports.sendNotification = functions.firestore
+/**
+ * Cloud Function que escucha la coleccion 'alerts' y envia
+ * notificaciones push FCM a todos los miembros del grupo.
+ */
+exports.sendAlertNotification = functions.firestore
   .document('alerts/{alertId}')
   .onCreate(async (snap, context) => {
     const alert = snap.data();
-    const {groupId, senderId, receiverId, type, payload, senderName} = alert;
+    if (!alert) return null;
 
-    if (!groupId) {
-      return null;
-    }
+    const { groupId, senderId, receiverId, type, payload, senderName } = alert;
 
-    let tokens = [];
-    if (receiverId !== 'all') {
-      const userDoc = await admin.firestore().collection('users').doc(receiverId).get();
-      const token = userDoc.data()?.fcmToken;
-      if (token) {
-        tokens.push(token);
+    // Obtener todos los miembros del grupo
+    const usersSnap = await admin.firestore()
+      .collection('users')
+      .where('groupId', '==', groupId)
+      .get();
+
+    const tokens = [];
+    const tokenToUid = {};
+
+    usersSnap.forEach(doc => {
+      const data = doc.data();
+      // No enviar al que envio el mensaje
+      if (doc.id !== senderId && data.fcmToken) {
+        // Si es privado, solo al destinatario
+        if (receiverId !== 'all' && doc.id !== receiverId) return;
+        tokens.push(data.fcmToken);
+        tokenToUid[data.fcmToken] = doc.id;
       }
-    } else {
-      const members = await admin.firestore()
-        .collection('users')
-        .where('groupId', '==', groupId)
-        .get();
-      members.docs.forEach((doc) => {
-        if (doc.id !== senderId) {
-          const token = doc.data().fcmToken;
-          if (token) {
-            tokens.push(token);
-          }
-        }
-      });
-    }
+    });
 
     if (tokens.length === 0) {
+      console.log('No hay tokens FCM validos para este grupo');
       return null;
     }
 
-    let title;
-    let body;
-    if (type === 'SOS') {
-      title = 'S.O.S - MiClan';
-      body = 'ALERTA DE PANICO de ' + (senderName || 'Miembro');
-    } else if (type === 'photo') {
-      title = (senderName || 'Miembro');
-      body = 'Te envio una foto';
-    } else if (type === 'audio') {
-      title = (senderName || 'Miembro');
-      body = 'Te envio un audio';
-    } else {
-      title = (senderName || 'Miembro');
-      body = payload;
-    }
+    const isSOS = type === 'SOS';
+    const isCommand = type === 'command_message';
+
+    const title = isSOS 
+      ? 'S.O.S - MiClan' 
+      : isCommand 
+        ? 'Comando - ' + (senderName || 'Grupo')
+        : 'MiClan - ' + (senderName || 'Grupo');
+
+    const body = isSOS 
+      ? 'ALERTA DE PANICO ACTIVADA!' 
+      : payload;
 
     const message = {
       tokens: tokens,
-      notification: {title: title, body: body},
-      data: {type: type, groupId: groupId, alertId: context.params.alertId},
+      data: {
+        type: type || 'message',
+        alertId: context.params.alertId,
+        groupId: groupId,
+        senderId: senderId,
+        receiverId: receiverId,
+      },
+      notification: {
+        title: title,
+        body: body,
+      },
       android: {
-        priority: type === 'SOS' ? 'high' : 'normal',
+        priority: 'high',
         notification: {
-          channelId: type === 'SOS' ? 'sos_channel' : 'msg_channel',
+          channelId: isSOS ? 'sos_channel' : 'msg_channel',
           sound: 'default',
+          priority: 'high',
+          visibility: 'public',
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+            alert: {
+              title: title,
+              body: body,
+            },
+          },
         },
       },
     };
 
+    // Para SOS: agregar fullScreenIntent
+    if (isSOS) {
+      message.android.notification.fullScreenIntent = true;
+    }
+
     try {
       const response = await admin.messaging().sendEachForMulticast(message);
-      console.log('Notificaciones enviadas:', response.successCount);
+      console.log('Notificaciones enviadas: ' + response.successCount + '/' + tokens.length);
+
+      // Limpiar tokens invalidos
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          const errorCode = resp.error?.code;
+          if (errorCode === 'messaging/registration-token-not-registered' ||
+              errorCode === 'messaging/invalid-registration-token') {
+            const badToken = tokens[idx];
+            const uid = tokenToUid[badToken];
+            if (uid) {
+              console.log('Eliminando token invalido para usuario ' + uid);
+              admin.firestore().collection('users').doc(uid).update({
+                fcmToken: admin.firestore.FieldValue.delete()
+              }).catch(() => {});
+            }
+          }
+        }
+      });
     } catch (error) {
-      console.error('Error enviando:', error);
+      console.error('Error enviando notificaciones:', error);
     }
 
     return null;
