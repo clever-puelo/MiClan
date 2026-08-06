@@ -23,7 +23,6 @@ class LocationService {
   Future<void> startTracking(String uid, String groupId) async {
     if (!await checkPermissions()) return;
 
-    // Subir ubicacion actual inmediatamente
     try {
       final currentPos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
       await _db.insertLocation(groupId, currentPos.latitude, currentPos.longitude);
@@ -31,7 +30,17 @@ class LocationService {
       _lastPosition = currentPos;
     } catch (_) {}
 
-    const locationSettings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10);
+    final locationSettings = AndroidSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 10,
+      foregroundNotificationConfig: ForegroundNotificationConfig(
+        notificationText: 'MiClan esta rastreando tu ubicacion',
+        notificationTitle: 'GPS Activo',
+        enableWakeLock: true,
+        setOngoing: true,
+      ),
+    );
+
     Geolocator.getPositionStream(locationSettings: locationSettings).listen((position) async {
       await _db.insertLocation(groupId, position.latitude, position.longitude);
       final prefs = await SharedPreferences.getInstance();

@@ -6,6 +6,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
+import '../main.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -45,13 +46,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     if (user == null) {
       return const Scaffold(
-        backgroundColor: Color(0xFF0F172A),
+        backgroundColor: AppColors.background,
         body: Center(child: CircularProgressIndicator()),
       );
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFF273758),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,

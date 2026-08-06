@@ -1,16 +1,18 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
+import '../main.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
   @override
-  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+  ConsumerState createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
@@ -19,6 +21,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _mapReady = false;
   bool _locationChecked = false;
   String _selectedReceiver = 'all';
+  String? _selectedMemberUid;
 
   @override
   void initState() {
@@ -27,29 +30,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _checkLocationAndInit() async {
-    // Pedir permisos explicitamente
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
       _showLocationDialog('GPS apagado', 'Activa la ubicacion para usar el mapa.');
       setState(() => _locationChecked = true);
       return;
     }
-
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied && mounted) {
-        _showLocationDialog('Permiso denegado', 'La app necesita acceso a tu ubicacion para mostrarte en el mapa.');
+        _showLocationDialog('Permiso denegado', 'La app necesita acceso a tu ubicacion.');
         setState(() => _locationChecked = true);
         return;
       }
     }
     if (permission == LocationPermission.deniedForever && mounted) {
-      _showLocationDialog('Permiso bloqueado', 'Ve a configuracion y habilita la ubicacion para MiClan.');
+      _showLocationDialog('Permiso bloqueado', 'Ve a configuracion y habilita la ubicacion.');
       setState(() => _locationChecked = true);
       return;
     }
-
     await _initLocation();
     setState(() => _locationChecked = true);
   }
@@ -58,14 +58,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     try {
       final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
       if (!mounted) return;
-
       setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
-
-      // Mover mapa si ya esta listo
       if (_mapReady && _myLocation != null) {
         _mapController.move(_myLocation!, 16);
       }
-
       final user = ref.read(currentUserProvider).valueOrNull;
       if (user?.groupId != null) {
         ref.read(locationServiceProvider).startTracking(user!.uid, user.groupId!);
@@ -83,22 +79,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: AppColors.modalBg,
         title: Text(title, style: const TextStyle(color: Colors.white)),
         content: Text(content, style: const TextStyle(color: Colors.white70)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
       ),
     );
   }
 
   void _centerOnMe() {
+    setState(() => _selectedMemberUid = null);
     if (_myLocation != null) {
       _mapController.move(_myLocation!, 17);
     } else {
       _checkLocationAndInit();
     }
+  }
+
+  void _centerOnMember(AppUser member, LatLng location) {
+    setState(() => _selectedMemberUid = member.uid);
+    _mapController.move(location, 16);
   }
 
   @override
@@ -110,16 +110,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     if (!_locationChecked) {
       return const Scaffold(
-        backgroundColor: Color(0xFF0F172A),
+        backgroundColor: AppColors.background,
         body: Center(child: CircularProgressIndicator(color: Colors.blue)),
       );
     }
 
     return userAsync.when(
       data: (user) {
-        if (user == null) {
-          return _errorScaffold('No hay usuario activo');
-        }
+        if (user == null) return _errorScaffold('No hay usuario activo');
         return membersAsync.when(
           data: (members) => groupAsync.when(
             data: (group) => _buildUI(context, user, members, group, activeSOS),
@@ -136,21 +134,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _loadingScaffold() => const Scaffold(
-        backgroundColor: Color(0xFF0F172A),
-        body: Center(child: CircularProgressIndicator(color: Colors.blue)),
-      );
+    backgroundColor: AppColors.background,
+    body: Center(child: CircularProgressIndicator(color: Colors.blue)),
+  );
 
   Widget _errorScaffold(String msg) => Scaffold(
-        backgroundColor: const Color(0xFF0F172A),
-        body: Center(child: Text(msg, style: const TextStyle(color: Colors.white70))),
-      );
+    backgroundColor: AppColors.background,
+    body: Center(child: Text(msg, style: const TextStyle(color: Colors.white70))),
+  );
 
   Widget _buildUI(BuildContext context, AppUser user, List<AppUser> members, AppGroup? group, AppAlert? activeSOS) {
     final isAdmin = user.uid == group?.ownerId;
     final bottomPad = MediaQuery.of(context).padding.bottom;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: AppColors.background,
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -170,7 +168,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         children: [
           Positioned.fill(
             top: MediaQuery.of(context).padding.top + 60,
-            bottom: 220 + bottomPad,
+            bottom: 260 + bottomPad,
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 12),
               decoration: BoxDecoration(
@@ -185,9 +183,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   initialZoom: _myLocation != null ? 16.0 : 12.0,
                   onMapReady: () {
                     _mapReady = true;
-                    if (_myLocation != null) {
-                      _mapController.move(_myLocation!, 16);
-                    }
+                    if (_myLocation != null) _mapController.move(_myLocation!, 16);
                   },
                 ),
                 children: [
@@ -210,7 +206,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
           Positioned(
             right: 24,
-            bottom: 240 + bottomPad,
+            bottom: 280 + bottomPad,
             child: _glassFAB(
               icon: Icons.my_location,
               color: _myLocation != null ? Colors.blue.shade400 : Colors.grey,
@@ -226,14 +222,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(24),
-                color: Colors.black.withOpacity(0.5),
-                border: Border.all(color: Colors.white.withOpacity(0.1)),
+                color: AppColors.modalBg.withOpacity(0.95),
+                border: Border.all(color: AppColors.borderGlass),
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 20)],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _buildReceiverSelector(members, user),
+                  const SizedBox(height: 12),
+                  _buildMemberChips(members, user),
                   const SizedBox(height: 12),
                   Row(
                     children: [
@@ -255,15 +253,53 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  Widget _buildMemberChips(List<AppUser> members, AppUser currentUser) {
+    return SizedBox(
+      height: 40,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: members.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final member = members[index];
+          final isSelected = member.uid == _selectedMemberUid;
+          final loc = ref.read(memberLocationProvider(member.uid)).value;
+          final hasLocation = loc != null;
+
+          return ActionChip(
+            avatar: CircleAvatar(
+              radius: 10,
+              backgroundColor: hasLocation ? AppColors.accentGreen : Colors.grey,
+            ),
+            label: Text(
+              member.displayName,
+              style: TextStyle(
+                color: isSelected ? AppColors.accentBlue : Colors.white,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                fontSize: 12,
+              ),
+            ),
+            backgroundColor: isSelected
+              ? AppColors.accentBlue.withOpacity(0.2)
+              : Colors.white.withOpacity(0.08),
+            side: BorderSide(
+              color: isSelected ? AppColors.accentBlue : Colors.white.withOpacity(0.1),
+            ),
+            onPressed: hasLocation ? () => _centerOnMember(member, loc) : null,
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildReceiverSelector(List<AppUser> members, AppUser currentUser) {
     final items = [
       const DropdownMenuItem(value: 'all', child: Text('Todos', style: TextStyle(color: Colors.white))),
       ...members.where((m) => m.uid != currentUser.uid).map((m) => DropdownMenuItem(
-            value: m.uid,
-            child: Text(m.displayName, style: const TextStyle(color: Colors.white)),
-          )),
+        value: m.uid,
+        child: Text(m.displayName, style: const TextStyle(color: Colors.white)),
+      )),
     ];
-
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
@@ -271,9 +307,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         color: Colors.white.withOpacity(0.08),
       ),
       child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
+        child: DropdownButton(
           value: _selectedReceiver,
-          dropdownColor: const Color(0xFF1E293B),
+          dropdownColor: AppColors.modalBg,
           isExpanded: true,
           icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
           onChanged: (val) => setState(() => _selectedReceiver = val!),
@@ -293,8 +329,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           borderRadius: BorderRadius.circular(20),
           gradient: LinearGradient(
             colors: hasActiveSOS
-                ? [Colors.orange.shade700, Colors.orange.shade900]
-                : [Colors.red.shade600, Colors.red.shade900],
+              ? [Colors.orange.shade700, Colors.orange.shade900]
+              : [Colors.red.shade600, Colors.red.shade900],
           ),
           border: Border.all(
             color: hasActiveSOS ? Colors.orange.shade200.withOpacity(0.4) : Colors.red.shade200.withOpacity(0.4),
@@ -311,20 +347,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              hasActiveSOS ? Icons.stop_circle : Icons.warning_amber_rounded,
-              color: Colors.white,
-              size: 32,
-            ),
+            Icon(hasActiveSOS ? Icons.stop_circle : Icons.warning_amber_rounded, color: Colors.white, size: 32),
             const SizedBox(width: 12),
             Text(
               hasActiveSOS ? 'CANCELAR S.O.S' : 'S.O.S',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 22,
-                letterSpacing: 2,
-              ),
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 22, letterSpacing: 2),
             ),
           ],
         ),
@@ -336,27 +363,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Consumer(
       builder: (context, ref, child) {
         final markers = <Marker>[];
-
         for (var member in members) {
           final loc = ref.watch(memberLocationProvider(member.uid)).value;
           if (loc == null) continue;
-
           final isMe = member.uid == currentUser.uid;
           final isAdmin = member.uid == ref.watch(currentGroupProvider).valueOrNull?.ownerId;
           if (isMe) _myLocation = loc;
 
           Color pinColor;
           IconData pinIcon;
-          if (isMe) {
-            pinColor = Colors.red;
-            pinIcon = Icons.person_pin_circle;
-          } else if (isAdmin == true) {
-            pinColor = Colors.green;
-            pinIcon = Icons.admin_panel_settings;
-          } else {
-            pinColor = Colors.blue;
-            pinIcon = Icons.person_pin_circle;
-          }
+          if (isMe) { pinColor = Colors.red; pinIcon = Icons.person_pin_circle; }
+          else if (isAdmin == true) { pinColor = Colors.green; pinIcon = Icons.admin_panel_settings; }
+          else { pinColor = Colors.blue; pinIcon = Icons.person_pin_circle; }
 
           markers.add(Marker(
             point: loc,
@@ -432,12 +450,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _quickBtn(String text, Color color, AppUser user) {
     return GestureDetector(
       onTap: () {
-        ref.read(firestoreServiceProvider).sendAlert(
-              user,
-              _selectedReceiver,
-              'quick_message',
-              text,
-            );
+        ref.read(firestoreServiceProvider).sendAlert(user, _selectedReceiver, 'quick_message', text);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Enviado: $text'), duration: const Duration(seconds: 1)),
         );
@@ -449,11 +462,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           color: color.withOpacity(0.15),
           border: Border.all(color: color.withOpacity(0.4)),
         ),
-        child: Text(
-          text,
-          textAlign: TextAlign.center,
-          style: TextStyle(color: color.withOpacity(0.9), fontSize: 12, fontWeight: FontWeight.w600),
-        ),
+        child: Text(text, textAlign: TextAlign.center, style: TextStyle(color: color.withOpacity(0.9), fontSize: 12, fontWeight: FontWeight.w600)),
       ),
     );
   }
@@ -468,11 +477,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           color: Colors.purple.withOpacity(0.15),
           border: Border.all(color: Colors.purple.withOpacity(0.4)),
         ),
-        child: const Text(
-          '...',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.purple, fontSize: 14, fontWeight: FontWeight.w600),
-        ),
+        child: const Text('...', textAlign: TextAlign.center, style: TextStyle(color: Colors.purple, fontSize: 14, fontWeight: FontWeight.w600)),
       ),
     );
   }
@@ -482,7 +487,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: AppColors.modalBg,
         title: const Text('Mensaje personalizado', style: TextStyle(color: Colors.white)),
         content: TextField(
           controller: ctrl,
@@ -498,12 +503,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ElevatedButton(
             onPressed: () {
               if (ctrl.text.trim().isNotEmpty) {
-                ref.read(firestoreServiceProvider).sendAlert(
-                      user,
-                      _selectedReceiver,
-                      'custom',
-                      ctrl.text.trim(),
-                    );
+                ref.read(firestoreServiceProvider).sendAlert(user, _selectedReceiver, 'custom', ctrl.text.trim());
                 Navigator.pop(ctx);
               }
             },
@@ -518,7 +518,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: AppColors.modalBg,
         title: const Text('Activar S.O.S?', style: TextStyle(color: Colors.white)),
         content: const Text('Se enviara una alerta de panico a todo el grupo.', style: TextStyle(color: Colors.white70)),
         actions: [
@@ -526,12 +526,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () async {
-              await ref.read(firestoreServiceProvider).sendAlert(
-                    user,
-                    'all',
-                    'SOS',
-                    'ALERTA DE PANICO ACTIVADA!',
-                  );
+              await ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'SOS', 'ALERTA DE PANICO ACTIVADA!');
               if (mounted) Navigator.pop(ctx);
             },
             child: const Text('ENVIAR S.O.S', style: TextStyle(color: Colors.white)),
@@ -553,10 +548,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _logout() async {
-    final confirm = await showDialog<bool>(
+    final confirm = await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: AppColors.modalBg,
         title: const Text('Cerrar sesion?', style: TextStyle(color: Colors.white)),
         content: const Text('Volveras a la pantalla de login.', style: TextStyle(color: Colors.white70)),
         actions: [
@@ -569,17 +564,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ],
       ),
     );
-    if (confirm == true) {
-      await ref.read(authServiceProvider).signOut();
-    }
+    if (confirm == true) await ref.read(authServiceProvider).signOut();
   }
 
   void _showMembersSheet(BuildContext context, List<AppUser> members, bool isAdmin, AppGroup? group, AppUser currentUser) {
     final messenger = ScaffoldMessenger.of(context);
-
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E293B),
+      backgroundColor: AppColors.modalBg,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) {
         return Consumer(
@@ -595,19 +587,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     const Text('Miembros', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
                     const SizedBox(height: 12),
                     ...members.map((m) => ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: m.uid == group?.ownerId ? Colors.green : Colors.blue,
-                            child: Icon(m.uid == group?.ownerId ? Icons.admin_panel_settings : Icons.person, color: Colors.white, size: 18),
-                          ),
-                          title: Text(m.displayName, style: const TextStyle(color: Colors.white)),
-                          subtitle: Text(m.uid == group?.ownerId ? 'Administrador' : 'Miembro', style: TextStyle(color: Colors.white.withOpacity(0.5))),
-                          trailing: isAdmin && m.uid != currentUser.uid
-                              ? IconButton(
-                                  icon: const Icon(Icons.remove_circle, color: Colors.red),
-                                  onPressed: () => _confirmRemoveMember(m, group!, currentUser.displayName),
-                                )
-                              : null,
-                        )),
+                      leading: CircleAvatar(
+                        backgroundColor: m.uid == group?.ownerId ? Colors.green : Colors.blue,
+                        child: Icon(m.uid == group?.ownerId ? Icons.admin_panel_settings : Icons.person, color: Colors.white, size: 18),
+                      ),
+                      title: Text(m.displayName, style: const TextStyle(color: Colors.white)),
+                      subtitle: Text(m.uid == group?.ownerId ? 'Administrador' : 'Miembro', style: TextStyle(color: Colors.white.withOpacity(0.5))),
+                      trailing: isAdmin && m.uid != currentUser.uid
+                        ? IconButton(
+                            icon: const Icon(Icons.remove_circle, color: Colors.red),
+                            onPressed: () => _confirmRemoveMember(m, group!, currentUser.displayName),
+                          )
+                        : null,
+                    )),
                     if (isAdmin) ...[
                       const Divider(color: Colors.white24),
                       const Text('Solicitudes pendientes', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
@@ -617,31 +609,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           if (requests.isEmpty) return const Text('No hay solicitudes', style: TextStyle(color: Colors.white38));
                           return Column(
                             children: requests.map((req) => ListTile(
-                                  title: Text(req.displayName, style: const TextStyle(color: Colors.white)),
-                                  trailing: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        icon: const Icon(Icons.check_circle, color: Colors.green),
-                                        onPressed: () async {
-                                          await ref.read(firestoreServiceProvider).approveRequest(group!.id, req.uid);
-                                          messenger.showSnackBar(
-                                            SnackBar(content: Text('${req.displayName} aprobado'), backgroundColor: Colors.green),
-                                          );
-                                        },
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(Icons.cancel, color: Colors.red),
-                                        onPressed: () async {
-                                          await ref.read(firestoreServiceProvider).rejectRequest(group!.id, req.uid);
-                                          messenger.showSnackBar(
-                                            SnackBar(content: Text('${req.displayName} rechazado'), backgroundColor: Colors.red),
-                                          );
-                                        },
-                                      ),
-                                    ],
+                              title: Text(req.displayName, style: const TextStyle(color: Colors.white)),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.check_circle, color: Colors.green),
+                                    onPressed: () async {
+                                      await ref.read(firestoreServiceProvider).approveRequest(group!.id, req.uid);
+                                      messenger.showSnackBar(SnackBar(content: Text('${req.displayName} aprobado'), backgroundColor: Colors.green));
+                                    },
                                   ),
-                                )).toList(),
+                                  IconButton(
+                                    icon: const Icon(Icons.cancel, color: Colors.red),
+                                    onPressed: () async {
+                                      await ref.read(firestoreServiceProvider).rejectRequest(group!.id, req.uid);
+                                      messenger.showSnackBar(SnackBar(content: Text('${req.displayName} rechazado'), backgroundColor: Colors.red));
+                                    },
+                                  ),
+                                ],
+                              ),
+                            )).toList(),
                           );
                         },
                         loading: () => const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
@@ -659,12 +647,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _confirmRemoveMember(AppUser member, AppGroup group, String adminName) async {
-    final confirm = await showDialog<bool>(
+    final confirm = await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: AppColors.modalBg,
         title: Text('Expulsar a ${member.displayName}?', style: const TextStyle(color: Colors.white)),
-        content: const Text('El miembro sera eliminado del grupo y recibira una notificacion.', style: TextStyle(color: Colors.white70)),
+        content: const Text('El miembro sera eliminado del grupo.', style: TextStyle(color: Colors.white70)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
           ElevatedButton(
@@ -679,7 +667,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await ref.read(firestoreServiceProvider).removeMember(group.id, member.uid, adminName);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${member.displayName} expulsado del grupo'), backgroundColor: Colors.orange),
+          SnackBar(content: Text('${member.displayName} expulsado'), backgroundColor: Colors.orange),
         );
       }
     }
@@ -689,7 +677,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (currentUser.uid == tapped.uid) return;
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E293B),
+      backgroundColor: AppColors.modalBg,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (ctx) => Padding(
         padding: const EdgeInsets.all(20),

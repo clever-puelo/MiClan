@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -15,31 +14,21 @@ import 'screens/chat_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/notification_service.dart';
 
-@pragma('vm:entry-point')
-Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  await NotificationService.init();
-
-  final type = message.data['type'] ?? 'message';
-  final title = message.notification?.title ?? 'MiClan';
-  final body = message.notification?.body ?? 'Nuevo mensaje';
-
-  // ID fijo para SOS para que se reemplace si hay otro SOS activo
-  final id = type == 'SOS' ? 9999 : DateTime.now().millisecond;
-
-  await NotificationService.showLocalNotification(
-    title: title,
-    body: body,
-    channelId: type == 'SOS' ? 'sos_channel' : 'msg_channel',
-    id: id,
-  );
+class AppColors {
+  static const Color background = Color(0xFF273758);
+  static const Color modalBg    = Color(0xFF3A4A66);
+  static const Color cardGlass  = Color(0x0DFFFFFF);
+  static const Color borderGlass= Color(0x1AFFFFFF);
+  static const Color accentBlue = Color(0xFF3B82F6);
+  static const Color accentGreen= Color(0xFF22C55E);
+  static const Color accentRed  = Color(0xFFEF4444);
+  static const Color accentAmber= Color(0xFFF59E0B);
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await NotificationService.init();
-  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
   runApp(const ProviderScope(child: MiClanApp()));
 }
 
@@ -65,12 +54,13 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
 
     ref.listenManual(currentUserProvider, (prev, next) async {
       _authListener.value = next;
-
       final user = next.value;
 
-      // CORRECCION: Guardar token FCM cuando el usuario se loguea
       if (user != null) {
-        await _saveFcmToken();
+        NotificationService.startListeningAlerts(
+          user.groupId ?? '',
+          user.uid,
+        );
       }
 
       if (user != null && session != null && user.sessionId != null) {
@@ -102,17 +92,13 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       refreshListenable: _authListener,
       redirect: (context, state) {
         if (_authListener.value.isLoading) return null;
-
         final user = _authListener.value.value;
         final isLoggedIn = user != null;
         final hasGroup = user?.groupId != null;
         final path = state.matchedLocation;
-
         if (!isLoggedIn && path != '/login') return '/login';
         if (isLoggedIn && !hasGroup && path != '/onboarding') return '/onboarding';
-        if (isLoggedIn && hasGroup && (path == '/login' || path == '/onboarding')) {
-          return '/home';
-        }
+        if (isLoggedIn && hasGroup && (path == '/login' || path == '/onboarding')) return '/home';
         return null;
       },
       routes: [
@@ -124,62 +110,12 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       ],
     );
 
-    _setupFCM();
     if (mounted) setState(() => _initialized = true);
-  }
-
-  Future<void> _setupFCM() async {
-    final messaging = FirebaseMessaging.instance;
-    await messaging.requestPermission(alert: true, badge: true, sound: true);
-
-    // Foreground: mostrar notificacion local
-    FirebaseMessaging.onMessage.listen((message) async {
-      final type = message.data['type'] ?? 'message';
-      final title = message.notification?.title ?? 'MiClan';
-      final body = message.notification?.body ?? 'Nuevo mensaje';
-
-      await NotificationService.showLocalNotification(
-        title: title,
-        body: body,
-        channelId: type == 'SOS' ? 'sos_channel' : 'msg_channel',
-        id: type == 'SOS' ? 9999 : DateTime.now().millisecond,
-      );
-    });
-
-    // App abierta desde notificacion
-    FirebaseMessaging.onMessageOpenedApp.listen((message) {
-      final type = message.data['type'];
-      if (type == 'SOS' || type == 'message' || type == 'quick_message') {
-        _router?.go('/chat');
-      } else {
-        _router?.go('/home');
-      }
-    });
-
-    // Guardar token FCM (ahora y en cada refresh)
-    await _saveFcmToken();
-    messaging.onTokenRefresh.listen((newToken) => _saveFcmToken(newToken));
-  }
-
-  /// Guarda el token FCM en Firestore asociado al usuario logueado.
-  Future<void> _saveFcmToken([String? token]) async {
-    final t = token ?? await FirebaseMessaging.instance.getToken();
-    if (t == null) {
-      debugPrint('FCM: No se pudo obtener token');
-      return;
-    }
-
-    final user = ref.read(currentUserProvider).valueOrNull;
-    if (user != null) {
-      await ref.read(authServiceProvider).updateFcmToken(user.uid, t);
-      debugPrint('FCM Token guardado en Firestore para ${user.displayName}');
-    } else {
-      debugPrint('FCM: Usuario aun no cargado, token pendiente...');
-    }
   }
 
   @override
   void dispose() {
+    NotificationService.stopListeningAlerts();
     _authListener.dispose();
     super.dispose();
   }
@@ -190,7 +126,7 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       return MaterialApp(
         debugShowCheckedModeBanner: false,
         home: Scaffold(
-          backgroundColor: const Color(0xFF0F172A),
+          backgroundColor: AppColors.background,
           body: Center(child: CircularProgressIndicator(color: Colors.blue.shade400)),
         ),
       );
@@ -199,9 +135,19 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       title: 'MiClan',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0F172A),
+        scaffoldBackgroundColor: AppColors.background,
+        dialogTheme: DialogThemeData(
+          backgroundColor: AppColors.modalBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        ),
+        bottomSheetTheme: BottomSheetThemeData(
+          backgroundColor: AppColors.modalBg,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+        ),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3B82F6),
+          seedColor: AppColors.accentBlue,
           brightness: Brightness.dark,
         ),
         textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),

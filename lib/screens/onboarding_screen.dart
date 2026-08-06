@@ -42,7 +42,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     final user = ref.watch(currentUserProvider).valueOrNull;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFF273758),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(28),
@@ -171,7 +171,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: const Color(0xFF3A4A66),
         title: const Text('Nombre del Grupo', style: TextStyle(color: Colors.white)),
         content: TextField(
           controller: _nameCtrl,

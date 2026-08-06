@@ -22,7 +22,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFF273758),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(

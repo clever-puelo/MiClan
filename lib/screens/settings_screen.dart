@@ -42,7 +42,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final isAdmin = user?.uid == group?.ownerId;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFF273758),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -113,55 +113,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             onTap: _openBatterySettings,
           ),
           _divider(),
-          _sectionTitle('Notificaciones Push'),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              color: Colors.white.withOpacity(0.05),
-              border: Border.all(color: Colors.white.withOpacity(0.1)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Server Key FCM (opcional)',
-                  style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _serverKeyCtrl,
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                  decoration: InputDecoration(
-                    hintText: 'Pega aqui tu Server Key de Firebase',
-                    hintStyle: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 12),
-                    filled: true,
-                    fillColor: Colors.white.withOpacity(0.05),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.save, color: Colors.blue),
-                      onPressed: () async {
-                        final prefs = await SharedPreferences.getInstance();
-                        await prefs.setString('fcm_server_key', _serverKeyCtrl.text.trim());
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Server Key guardada')),
-                          );
-                        }
-                      },
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Necesaria para notificaciones push. La encontras en Firebase Console > Project Settings > Cloud Messaging.',
-                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 10),
-                ),
-              ],
-            ),
-          ),
-          _divider(),
-          _sectionTitle('Caja Negra'),
+                    _sectionTitle('Caja Negra'),
           _actionTile(icon: Icons.upload_file, text: 'Exportar backup', onTap: () async {
             await ref.read(backupServiceProvider).exportBackup();
             if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backup exportado')));
@@ -183,7 +135,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 final confirm = await showDialog(
                   context: context,
                   builder: (ctx) => AlertDialog(
-                    backgroundColor: const Color(0xFF1E293B),
+                    backgroundColor: const Color(0xFF3A4A66),
                     title: const Text('Borrar grupo?', style: TextStyle(color: Colors.white)),
                     content: const Text('Como administrador, al salir se eliminara el grupo completo. Los miembros quedaran huerfanos. Continuar?', style: TextStyle(color: Colors.white70)),
                     actions: [
@@ -211,7 +163,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               final confirm = await showDialog(
                 context: context,
                 builder: (ctx) => AlertDialog(
-                  backgroundColor: const Color(0xFF1E293B),
+                  backgroundColor: const Color(0xFF3A4A66),
                   title: const Text('Eliminar cuenta?', style: TextStyle(color: Colors.white)),
                   content: const Text('Esta accion no se puede deshacer. Continuar?', style: TextStyle(color: Colors.white70)),
                   actions: [
@@ -299,7 +251,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: const Color(0xFF3A4A66),
         title: const Text('Nueva Zona', style: TextStyle(color: Colors.white)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -374,7 +326,7 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
     final membersAsync = ref.watch(groupMembersProvider);
 
     return Dialog(
-      backgroundColor: const Color(0xFF0F172A),
+      backgroundColor: const Color(0xFF273758),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       insetPadding: const EdgeInsets.all(16),
       child: Container(
@@ -441,7 +393,7 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       isExpanded: true,
-                      dropdownColor: const Color(0xFF1E293B),
+                      dropdownColor: const Color(0xFF3A4A66),
                       hint: const Text('Seleccionar miembro...', style: TextStyle(color: Colors.white54)),
                       value: _selectedMemberUid,
                       icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
@@ -480,7 +432,19 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
     final firestore = ref.read(firestoreServiceProvider);
 
     return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: firestore.getLocationHistoryStream(memberUid, since),
+      stream: FirebaseFirestore.instance
+              .collection('locations')
+              .doc(memberUid)
+              .collection('history')
+              .where('groupId', isEqualTo: widget.group.id)
+              .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+              .orderBy('timestamp', descending: true)
+              .snapshots()
+              .map((snap) => snap.docs.map((d) {
+                final data = d.data();
+                data['docId'] = d.id;
+                return data;
+              }).toList()),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
