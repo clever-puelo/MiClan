@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -13,6 +14,21 @@ import 'screens/home_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/notification_service.dart';
+
+// ============================================================================
+// BACKGROUND HANDLER - FCM
+// Se ejecuta cuando llega un push con la app cerrada
+// ============================================================================
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await NotificationService.init();
+  await NotificationService.showLocalNotification(
+    title: message.notification?.title ?? 'MiClan',
+    body: message.notification?.body ?? '',
+    channelId: message.data['type'] == 'SOS' ? 'sos_channel' : 'msg_channel',
+  );
+}
 
 class AppColors {
   static const Color background = Color(0xFF273758);
@@ -28,6 +44,10 @@ class AppColors {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // FCM background handler
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
   await NotificationService.init();
   runApp(const ProviderScope(child: MiClanApp()));
 }
@@ -57,10 +77,10 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       final user = next.value;
 
       if (user != null) {
-        NotificationService.startListeningAlerts(
-          user.groupId ?? '',
-          user.uid,
-        );
+        // Guardar token FCM en Firestore
+        await _saveFcmToken(user.uid);
+        // Escuchar alertas de Firestore para notificaciones locales en foreground
+        NotificationService.startListeningAlerts(user.groupId ?? '', user.uid);
       }
 
       if (user != null && session != null && user.sessionId != null) {
@@ -76,6 +96,15 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
           }
         }
       }
+    });
+
+    // FCM foreground handler
+    FirebaseMessaging.onMessage.listen((message) async {
+      await NotificationService.showLocalNotification(
+        title: message.notification?.title ?? 'MiClan',
+        body: message.notification?.body ?? '',
+        channelId: message.data['type'] == 'SOS' ? 'sos_channel' : 'msg_channel',
+      );
     });
 
     String initialLocation;
@@ -111,6 +140,23 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
     );
 
     if (mounted) setState(() => _initialized = true);
+  }
+
+  Future<void> _saveFcmToken(String uid) async {
+    try {
+      final messaging = FirebaseMessaging.instance;
+      await messaging.requestPermission(alert: true, badge: true, sound: true);
+      final token = await messaging.getToken();
+      if (token != null) {
+        await ref.read(authServiceProvider).updateFcmToken(uid, token);
+      }
+      // Escuchar cambios de token
+      messaging.onTokenRefresh.listen((newToken) {
+        ref.read(authServiceProvider).updateFcmToken(uid, newToken);
+      });
+    } catch (e) {
+      debugPrint('Error FCM token: $e');
+    }
   }
 
   @override

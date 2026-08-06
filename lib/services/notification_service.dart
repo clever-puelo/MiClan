@@ -3,6 +3,9 @@ import 'dart:typed_data';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+// ============================================================================
+// NOTIFICATION SERVICE - FCM + Notificaciones Locales
+// ============================================================================
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
   static bool _initialized = false;
@@ -10,32 +13,60 @@ class NotificationService {
 
   static Future<void> init() async {
     if (_initialized) return;
+
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const initSettings = InitializationSettings(android: androidSettings);
-    await _local.initialize(initSettings);
-
-    final sosChannel = AndroidNotificationChannel(
-      'sos_channel', 'S.O.S Emergencia',
-      description: 'Alertas de panico del grupo',
-      importance: Importance.max,
-      playSound: true,
-      enableVibration: true,
-      vibrationPattern: Int64List.fromList([0, 500, 200, 500, 200, 500]),
-    );
-    const msgChannel = AndroidNotificationChannel(
-      'msg_channel', 'Mensajes MiClan',
-      description: 'Mensajes del grupo',
-      importance: Importance.high,
-      playSound: true,
-      enableVibration: true,
+    await _local.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (details) {
+        // Manejar tap en notificacion
+      },
     );
 
-    await _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(sosChannel);
-    await _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(msgChannel);
-
+    await _createChannels();
     _initialized = true;
+  }
+
+  static Future<void> _createChannels() async {
+    final androidPlugin = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    if (androidPlugin == null) return;
+
+    // Canal SOS - Maxima prioridad
+    // NOTA: AndroidNotificationChannel NO tiene fullScreenIntent.
+    // Eso va en AndroidNotificationDetails de cada notificacion.
+    await androidPlugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'sos_channel',
+        'S.O.S Emergencia',
+        description: 'Alertas de panico del grupo',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+        enableLights: true,
+      ),
+    );
+
+    // Canal de mensajes
+    await androidPlugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'msg_channel',
+        'Mensajes MiClan',
+        description: 'Mensajes y alertas del grupo',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      ),
+    );
+
+    // Canal de geofence
+    await androidPlugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'geofence_channel',
+        'Geofence',
+        description: 'Notificaciones de zona segura',
+        importance: Importance.high,
+      ),
+    );
   }
 
   static Future<void> showLocalNotification({
@@ -57,6 +88,7 @@ class NotificationService {
       vibrationPattern: isSos ? Int64List.fromList([0, 500, 200, 500, 200, 500]) : null,
       icon: '@mipmap/ic_launcher',
       category: isSos ? AndroidNotificationCategory.alarm : null,
+      // fullScreenIntent VA AQUI, en AndroidNotificationDetails, NO en el canal
       fullScreenIntent: isSos,
       autoCancel: !isSos,
       visibility: NotificationVisibility.public,
