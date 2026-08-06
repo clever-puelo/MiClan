@@ -43,6 +43,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider).valueOrNull;
     final alertsAsync = ref.watch(groupAlertsProvider);
+    final membersAsync = ref.watch(groupMembersProvider);
 
     if (user == null) {
       return const Scaffold(
@@ -50,6 +51,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         body: Center(child: CircularProgressIndicator()),
       );
     }
+
+    // Mapa de UID -> nombre para resolver destinatarios
+    final memberNames = <String, String>{};
+    membersAsync.whenData((members) {
+      for (final m in members) {
+        memberNames[m.uid] = m.displayName;
+      }
+    });
 
     return Scaffold(
       backgroundColor: const Color(0xFF273758),
@@ -60,26 +69,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       body: Column(
         children: [
+          // BENTO GRANDE: ocupa todo el espacio disponible, dejando fuera solo el input
           Expanded(
-            child: alertsAsync.when(
-              data: (alerts) {
-                if (alerts.isEmpty) {
-                  return const Center(
-                    child: Text('No hay mensajes aun', style: TextStyle(color: Colors.white38)),
-                  );
-                }
-                return ListView.builder(
-                  controller: _scrollCtrl,
-                  reverse: true,
-                  padding: const EdgeInsets.all(12),
-                  itemCount: alerts.length,
-                  itemBuilder: (ctx, i) => _buildBubble(alerts[i], user),
-                );
-              },
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white70))),
+            child: Container(
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: AppColors.modalBg.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white.withOpacity(0.1)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 20,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: alertsAsync.when(
+                  data: (alerts) {
+                    if (alerts.isEmpty) {
+                      return const Center(
+                        child: Text('No hay mensajes aun', style: TextStyle(color: Colors.white38)),
+                      );
+                    }
+                    return ListView.builder(
+                      controller: _scrollCtrl,
+                      reverse: true,
+                      padding: const EdgeInsets.all(12),
+                      itemCount: alerts.length,
+                      itemBuilder: (ctx, i) => _buildBubble(alerts[i], user, memberNames),
+                    );
+                  },
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (e, _) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white70))),
+                ),
+              ),
             ),
           ),
+          // Zona de escritura (FUERA del bento)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
@@ -136,12 +166,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  Widget _buildBubble(AppAlert alert, AppUser currentUser) {
+  String _resolveReceiverName(String receiverId, Map<String, String> memberNames) {
+    if (receiverId == 'all') return 'Todos';
+    return memberNames[receiverId] ?? 'Miembro';
+  }
+
+  Widget _buildBubble(AppAlert alert, AppUser currentUser, Map<String, String> memberNames) {
     final isMine = alert.senderId == currentUser.uid;
     final isSOS = alert.type == 'SOS';
     final isCancelledSOS = isSOS && alert.sosStatus == 'cancelled';
-    final time = DateFormat('HH:mm').format(alert.timestamp);
+    final time = DateFormat('dd/MM/yyyy HH:mm').format(alert.timestamp);
     final senderName = alert.senderName ?? 'Miembro';
+    final receiverName = _resolveReceiverName(alert.receiverId, memberNames);
+    final header = isMine ? 'Yo' : senderName;
 
     if (isSOS) {
       return Padding(
@@ -171,6 +208,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     'Cancelado por miembro',
                     style: TextStyle(fontSize: 10, color: Colors.orange.shade200),
                   ),
+                const SizedBox(height: 4),
+                Text(
+                  'De $header a $receiverName  •  $time',
+                  style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.5)),
+                ),
               ],
             ),
           ),
@@ -189,9 +231,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.purple.withOpacity(0.3)),
             ),
-            child: Text(
-              alert.payload,
-              style: TextStyle(fontSize: 12, color: Colors.purple.shade200),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  alert.payload,
+                  style: TextStyle(fontSize: 12, color: Colors.purple.shade200),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  time,
+                  style: TextStyle(fontSize: 9, color: Colors.white.withOpacity(0.4)),
+                ),
+              ],
             ),
           ),
         ),
@@ -209,9 +261,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.orange.withOpacity(0.3)),
             ),
-            child: Text(
-              alert.payload,
-              style: TextStyle(fontSize: 12, color: Colors.orange.shade200),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  alert.payload,
+                  style: TextStyle(fontSize: 12, color: Colors.orange.shade200),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  time,
+                  style: TextStyle(fontSize: 9, color: Colors.white.withOpacity(0.4)),
+                ),
+              ],
             ),
           ),
         ),
@@ -239,16 +301,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (!isMine)
-              Text(
-                '$senderName -',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blue.shade300,
-                ),
+            // Encabezado: De xxxx a yyy
+            Text(
+              'De $header a $receiverName',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Colors.blue.shade300,
               ),
-            const SizedBox(height: 3),
+            ),
+            const SizedBox(height: 4),
             if (alert.type == 'photo') ...[
               ClipRRect(
                 borderRadius: BorderRadius.circular(10),

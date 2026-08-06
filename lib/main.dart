@@ -32,13 +32,13 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 class AppColors {
   static const Color background = Color(0xFF273758);
-  static const Color modalBg    = Color(0xFF3A4A66);
-  static const Color cardGlass  = Color(0x0DFFFFFF);
-  static const Color borderGlass= Color(0x1AFFFFFF);
+  static const Color modalBg = Color(0xFF3A4A66);
+  static const Color cardGlass = Color(0x0DFFFFFF);
+  static const Color borderGlass = Color(0x1AFFFFFF);
   static const Color accentBlue = Color(0xFF3B82F6);
-  static const Color accentGreen= Color(0xFF22C55E);
-  static const Color accentRed  = Color(0xFFEF4444);
-  static const Color accentAmber= Color(0xFFF59E0B);
+  static const Color accentGreen = Color(0xFF22C55E);
+  static const Color accentRed = Color(0xFFEF4444);
+  static const Color accentAmber = Color(0xFFF59E0B);
 }
 
 void main() async {
@@ -55,7 +55,7 @@ void main() async {
 class MiClanApp extends ConsumerStatefulWidget {
   const MiClanApp({super.key});
   @override
-  ConsumerState createState() => _MiClanAppState();
+  ConsumerState<MiClanApp> createState() => _MiClanAppState();
 }
 
 class _MiClanAppState extends ConsumerState<MiClanApp> {
@@ -77,10 +77,7 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       final user = next.value;
 
       if (user != null) {
-        // Guardar token FCM en Firestore
         await _saveFcmToken(user.uid);
-        // Escuchar alertas de Firestore para notificaciones locales en foreground
-        NotificationService.startListeningAlerts(user.groupId ?? '', user.uid);
       }
 
       if (user != null && session != null && user.sessionId != null) {
@@ -98,7 +95,7 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       }
     });
 
-    // FCM foreground handler
+    // FCM foreground handler - unico punto de entrada para notificaciones locales
     FirebaseMessaging.onMessage.listen((message) async {
       await NotificationService.showLocalNotification(
         title: message.notification?.title ?? 'MiClan',
@@ -150,7 +147,6 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       if (token != null) {
         await ref.read(authServiceProvider).updateFcmToken(uid, token);
       }
-      // Escuchar cambios de token
       messaging.onTokenRefresh.listen((newToken) {
         ref.read(authServiceProvider).updateFcmToken(uid, newToken);
       });
@@ -161,7 +157,6 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
 
   @override
   void dispose() {
-    NotificationService.stopListeningAlerts();
     _authListener.dispose();
     super.dispose();
   }
