@@ -7,10 +7,11 @@ admin.initializeApp();
 // ============================================================================
 // sendAlertNotification - Cloud Function v1 (FCM HTTP v1)
 // ============================================================================
-// CAMBIOS CLAVE para Doze / sueño profundo:
-// 1. TODOS los mensajes usan android.priority = 'high'
-// 2. Se agrega TTL de 3600s
-// 3. Se limpian tokens invalidos automaticamente
+// FIX 2026-08-07: Eliminado el campo 'notification' del payload FCM.
+// Ahora solo se envia 'data'. Esto evita duplicados porque FCM nativo
+// NO muestra notificacion automatica. La app (background/foreground)
+// es la unica responsable de mostrar la notificacion local.
+// title y body van dentro de data para que la app los lea.
 // ============================================================================
 
 exports.sendAlertNotification = functions.firestore.document('alerts/{alertId}').onCreate(async (snap, context) => {
@@ -60,7 +61,13 @@ exports.sendAlertNotification = functions.firestore.document('alerts/{alertId}')
     return null;
   }
 
-  const projectId = admin.instanceId().app.options.projectId;
+  const projectId = admin.app().options.projectId;
+  if (!projectId) {
+    console.error('No se pudo obtener projectId');
+    return null;
+  }
+  console.log('ProjectId:', projectId, 'Tokens:', tokens.length);
+
   const fcmUrl = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
 
   // Construir titulo y cuerpo segun tipo
@@ -106,6 +113,7 @@ exports.sendAlertNotification = functions.firestore.document('alerts/{alertId}')
 
   // Enviar a cada token individualmente
   const sendPromises = tokens.map(async (token) => {
+    // FIX: solo 'data', NO 'notification'. Evita duplicados.
     const message = {
       message: {
         token: token,
@@ -115,35 +123,27 @@ exports.sendAlertNotification = functions.firestore.document('alerts/{alertId}')
           groupId: groupId,
           senderId: senderId || '',
           receiverId: receiverId || 'all',
-        },
-        notification: {
           title: title,
           body: body,
+          channelId: channelId,
         },
         android: {
           priority: 'high',
           ttl: '3600s',
           directBootOk: true,
-          notification: {
-            channelId: channelId,
-            sound: 'default',
-            priority: 'high',
-            visibility: 'public',
-            fullScreenIntent: type === 'SOS',
-          },
         },
       },
     };
 
     try {
-      await axios.post(fcmUrl, message, {
+      const res = await axios.post(fcmUrl, message, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
         timeout: 15000,
       });
-      console.log(`FCM enviado OK a ${tokenToUid[token]}`);
+      console.log(`FCM OK a ${tokenToUid[token]} status=${res.status}`);
     } catch (err) {
       const errMsg = err.response?.data?.error?.message || err.message;
       console.error(`FCM fallo para ${tokenToUid[token]}: ${errMsg}`);

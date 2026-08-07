@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'firebase_options.dart';
@@ -17,16 +16,19 @@ import 'services/notification_service.dart';
 
 // ============================================================================
 // BACKGROUND HANDLER - FCM
-// Se ejecuta cuando llega un push con la app cerrada
+// Se ejecuta cuando llega un push con la app cerrada o en background.
+// FIX 2026-08-07: Ahora lee title/body de message.data (payload data-only).
+// FCM nativo NO muestra notificacion automatica porque no hay campo
+// 'notification' en el payload. Solo este handler muestra la local.
 // ============================================================================
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await NotificationService.init();
   await NotificationService.showLocalNotification(
-    title: message.notification?.title ?? 'MiClan',
-    body: message.notification?.body ?? '',
-    channelId: message.data['type'] == 'SOS' ? 'sos_channel' : 'msg_channel',
+    title: message.data['title'] ?? 'MiClan',
+    body: message.data['body'] ?? '',
+    channelId: message.data['channelId'] ?? 'msg_channel',
   );
 }
 
@@ -95,12 +97,12 @@ class _MiClanAppState extends ConsumerState<MiClanApp> {
       }
     });
 
-    // FCM foreground handler - unico punto de entrada para notificaciones locales
+    // FCM foreground handler - FIX: lee de message.data
     FirebaseMessaging.onMessage.listen((message) async {
       await NotificationService.showLocalNotification(
-        title: message.notification?.title ?? 'MiClan',
-        body: message.notification?.body ?? '',
-        channelId: message.data['type'] == 'SOS' ? 'sos_channel' : 'msg_channel',
+        title: message.data['title'] ?? 'MiClan',
+        body: message.data['body'] ?? '',
+        channelId: message.data['channelId'] ?? 'msg_channel',
       );
     });
 

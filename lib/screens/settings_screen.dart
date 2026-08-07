@@ -4,14 +4,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
 import '../services/firestore_service.dart';
+import '../main.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
   @override
-  ConsumerState createState() => _SettingsScreenState();
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
@@ -62,7 +65,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 8),
           _divider(),
           if (isAdmin) ...[
-            _sectionTitle('Zona Segura'),
+            _sectionTitle('Zona Segura (Geofence)'),
+            _glassTile(
+              label: 'Que hace?',
+              value: 'Define un perimetro circular. Si un miembro entra o sale, el grupo recibe una notificacion automatica.',
+            ),
             if (geofence != null) ...[
               _glassTile(label: 'Zona activa', value: '${geofence.name} (${geofence.radiusMeters}m)'),
               _actionTile(icon: Icons.delete, text: 'Eliminar zona', color: Colors.red, onTap: () async {
@@ -75,12 +82,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _actionTile(
                 icon: Icons.add_location,
                 text: 'Crear zona segura',
-                subtitle: 'Perimetro alrededor de tu ubicacion',
+                subtitle: 'Perimetro alrededor de tu ubicacion actual',
                 onTap: () => _showGeofenceDialog(group?.id ?? ''),
               ),
             ],
             _divider(),
-            // NUEVO: Boton Caja Negra del Grupo (solo admin)
+            // Caja Negra del Grupo (solo admin)
             _sectionTitle('Caja Negra del Grupo'),
             _actionTile(
               icon: Icons.table_chart,
@@ -108,12 +115,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           _actionTile(
             icon: Icons.battery_alert,
-            text: 'Desactivar optimizacion',
-            subtitle: 'Evita que Android cierre la app',
+            text: 'Desactivar optimizacion de bateria',
+            subtitle: 'Evita que Android cierre la app en segundo plano',
             onTap: _openBatterySettings,
           ),
           _divider(),
-                    _sectionTitle('Caja Negra'),
+          _sectionTitle('Caja Negra Local'),
           _actionTile(icon: Icons.upload_file, text: 'Exportar backup', onTap: () async {
             await ref.read(backupServiceProvider).exportBackup();
             if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Backup exportado')));
@@ -132,7 +139,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               if (user == null || group == null) return;
               final isOwner = user.uid == group.ownerId;
               if (isOwner) {
-                final confirm = await showDialog(
+                final confirm = await showDialog<bool>(
                   context: context,
                   builder: (ctx) => AlertDialog(
                     backgroundColor: const Color(0xFF3A4A66),
@@ -160,7 +167,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             text: 'Eliminar cuenta permanentemente',
             color: Colors.red,
             onTap: () async {
-              final confirm = await showDialog(
+              final confirm = await showDialog<bool>(
                 context: context,
                 builder: (ctx) => AlertDialog(
                   backgroundColor: const Color(0xFF3A4A66),
@@ -225,9 +232,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       ),
       child: Row(
         children: [
-          Text(label, style: TextStyle(fontSize: 13, color: Colors.white.withOpacity(0.5))),
-          const Spacer(),
-          Text(value, style: const TextStyle(fontSize: 14, color: Colors.white, fontWeight: FontWeight.w500)),
+          Expanded(
+            flex: 2,
+            child: Text(label, style: TextStyle(fontSize: 13, color: Colors.white.withOpacity(0.5))),
+          ),
+          Expanded(
+            flex: 3,
+            child: Text(value, style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w500)),
+          ),
         ],
       ),
     );
@@ -252,7 +264,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF3A4A66),
-        title: const Text('Nueva Zona', style: TextStyle(color: Colors.white)),
+        title: const Text('Nueva Zona Segura', style: TextStyle(color: Colors.white)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -265,7 +277,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               controller: radiusCtrl,
               style: const TextStyle(color: Colors.white),
               keyboardType: TextInputType.number,
-              decoration: InputDecoration(labelText: 'Radio (m)', labelStyle: TextStyle(color: Colors.white.withOpacity(0.5))),
+              decoration: InputDecoration(labelText: 'Radio (metros)', labelStyle: TextStyle(color: Colors.white.withOpacity(0.5))),
             ),
           ],
         ),
@@ -307,7 +319,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 }
 
-// Dialog interno para la Caja Negra del Grupo
+// ============================================================================
+// DIALOG CAJA NEGRA - Admin preseleccionado + boton Mapa
+// ============================================================================
 class _BlackBoxDialog extends ConsumerStatefulWidget {
   final AppGroup group;
   final AppUser adminUser;
@@ -319,7 +333,8 @@ class _BlackBoxDialog extends ConsumerStatefulWidget {
 }
 
 class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
-  String? _selectedMemberUid;
+  // FIX: admin preseleccionado por defecto
+  late String? _selectedMemberUid = widget.adminUser.uid;
 
   @override
   Widget build(BuildContext context) {
@@ -379,35 +394,50 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
                   0,
                   DropdownMenuItem(
                     value: widget.adminUser.uid,
-                    child: Text('${widget.adminUser.displayName} (Yo)', style: const TextStyle(color: Colors.white)),
+                    child: Text('${widget.adminUser.displayName} (Yo - Admin)', style: const TextStyle(color: Colors.white)),
                   ),
                 );
 
-                return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    color: Colors.white.withOpacity(0.05),
-                    border: Border.all(color: Colors.white.withOpacity(0.1)),
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      isExpanded: true,
-                      dropdownColor: const Color(0xFF3A4A66),
-                      hint: const Text('Seleccionar miembro...', style: TextStyle(color: Colors.white54)),
-                      value: _selectedMemberUid,
-                      icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
-                      onChanged: (val) => setState(() => _selectedMemberUid = val),
-                      items: items,
+                return Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        color: Colors.white.withOpacity(0.05),
+                        border: Border.all(color: Colors.white.withOpacity(0.1)),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          isExpanded: true,
+                          dropdownColor: const Color(0xFF3A4A66),
+                          hint: const Text('Seleccionar miembro...', style: TextStyle(color: Colors.white54)),
+                          value: _selectedMemberUid,
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
+                          onChanged: (val) => setState(() => _selectedMemberUid = val),
+                          items: items,
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(height: 8),
+                    // Boton Ver en mapa
+                    if (_selectedMemberUid != null)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          icon: Icon(Icons.map, color: Colors.blue.shade300, size: 18),
+                          label: Text('Ver recorrido en mapa', style: TextStyle(color: Colors.blue.shade300)),
+                          onPressed: () => _showRouteMapFromBlackBox(context, _selectedMemberUid!, members),
+                        ),
+                      ),
+                  ],
                 );
               },
               loading: () => const Center(child: CircularProgressIndicator()),
               error: (_, __) => const Text('Error cargando miembros', style: TextStyle(color: Colors.red)),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
 
             if (_selectedMemberUid != null)
               Expanded(child: _buildMovementsList(_selectedMemberUid!))
@@ -427,24 +457,32 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
     );
   }
 
+  void _showRouteMapFromBlackBox(BuildContext context, String memberUid, List<AppUser> members) {
+    final member = members.firstWhere((m) => m.uid == memberUid, orElse: () => widget.adminUser);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => _BlackBoxRouteMapModal(
+        memberUid: memberUid,
+        memberName: member.displayName,
+        groupId: widget.group.id,
+      ),
+    );
+  }
+
   Widget _buildMovementsList(String memberUid) {
     final since = DateTime.now().subtract(const Duration(days: 7));
-    final firestore = ref.read(firestoreServiceProvider);
 
-    return StreamBuilder<List<Map<String, dynamic>>>(
+    return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
-              .collection('locations')
-              .doc(memberUid)
-              .collection('history')
-              .where('groupId', isEqualTo: widget.group.id)
-              .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
-              .orderBy('timestamp', descending: true)
-              .snapshots()
-              .map((snap) => snap.docs.map((d) {
-                final data = d.data();
-                data['docId'] = d.id;
-                return data;
-              }).toList()),
+          .collection('locations')
+          .doc(memberUid)
+          .collection('history')
+          .where('groupId', isEqualTo: widget.group.id)
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+          .orderBy('timestamp', descending: true)
+          .snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -458,7 +496,7 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
           );
         }
 
-        final movements = snapshot.data ?? [];
+        final movements = snapshot.data?.docs ?? [];
         if (movements.isEmpty) {
           return Center(
             child: Text(
@@ -499,7 +537,7 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
               child: ListView.builder(
                 itemCount: movements.length,
                 itemBuilder: (ctx, i) {
-                  final m = movements[i];
+                  final m = movements[i].data() as Map<String, dynamic>;
                   final ts = m['timestamp'];
                   DateTime dt;
                   if (ts is Timestamp) {
@@ -512,7 +550,6 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
 
                   final lat = (m['lat'] as num?)?.toDouble() ?? 0.0;
                   final lng = (m['lng'] as num?)?.toDouble() ?? 0.0;
-
                   final isEven = i % 2 == 0;
 
                   return Container(
@@ -567,6 +604,191 @@ class _BlackBoxDialogState extends ConsumerState<_BlackBoxDialog> {
           ],
         );
       },
+    );
+  }
+}
+
+// ============================================================================
+// MODAL DE MAPA DESDE CAJA NEGRA
+// ============================================================================
+class _BlackBoxRouteMapModal extends StatelessWidget {
+  final String memberUid;
+  final String memberName;
+  final String groupId;
+
+  const _BlackBoxRouteMapModal({
+    required this.memberUid,
+    required this.memberName,
+    required this.groupId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final since = DateTime.now().subtract(const Duration(days: 7));
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      height: MediaQuery.of(context).size.height * 0.65,
+      decoration: BoxDecoration(
+        color: AppColors.modalBg,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 30)],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.05),
+                border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.1))),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.route, color: Colors.amber.shade400, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Recorrido: $memberName',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                  ),
+                  Text(
+                    'Ultimos 7 dias',
+                    style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('locations')
+                    .doc(memberUid)
+                    .collection('history')
+                    .where('groupId', isEqualTo: groupId)
+                    .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+                    .orderBy('timestamp', descending: false)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Center(child: Text('Error: ${snapshot.error}', style: const TextStyle(color: Colors.white70)));
+                  }
+
+                  final docs = snapshot.data?.docs ?? [];
+                  if (docs.isEmpty) {
+                    return Center(
+                      child: Text(
+                        'No hay recorrido registrado\npara este miembro en los ultimos 7 dias.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                      ),
+                    );
+                  }
+
+                  final points = docs.map((d) {
+                    final data = d.data() as Map<String, dynamic>;
+                    return LatLng(
+                      (data['lat'] as num).toDouble(),
+                      (data['lng'] as num).toDouble(),
+                    );
+                  }).toList();
+
+                  final center = points.isNotEmpty ? points[points.length ~/ 2] : const LatLng(-34.6, -58.38);
+
+                  return FlutterMap(
+                    options: MapOptions(
+                      initialCenter: center,
+                      initialZoom: 14,
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.agiletask.miclan',
+                      ),
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: points,
+                            color: Colors.amber.withOpacity(0.9),
+                            strokeWidth: 4,
+                          ),
+                        ],
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: points.first,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(Icons.trip_origin, color: Colors.green, size: 28),
+                          ),
+                          Marker(
+                            point: points.last,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(Icons.location_on, color: Colors.red, size: 32),
+                          ),
+                        ],
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.03),
+                border: Border(top: BorderSide(color: Colors.white.withOpacity(0.1))),
+              ),
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('locations')
+                    .doc(memberUid)
+                    .collection('history')
+                    .where('groupId', isEqualTo: groupId)
+                    .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+                    .orderBy('timestamp', descending: false)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  final count = snapshot.data?.docs.length ?? 0;
+                  return Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '$count puntos de ruta',
+                        style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.trip_origin, color: Colors.green, size: 14),
+                          const SizedBox(width: 4),
+                          Text('Inicio', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
+                          const SizedBox(width: 12),
+                          const Icon(Icons.location_on, color: Colors.red, size: 14),
+                          const SizedBox(width: 4),
+                          Text('Fin', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
+                        ],
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -5,6 +5,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
 import '../main.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
@@ -118,7 +120,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _centerOnMe() {
-    setState(() => _selectedMemberUid = null);
+    setState(() {
+      _selectedMemberUid = null;
+      _selectedReceiver = 'all';
+    });
     if (_myLocation != null) {
       _mapController.move(_myLocation!, 17);
     } else {
@@ -127,8 +132,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _centerOnMember(AppUser member, LatLng location) {
-    setState(() => _selectedMemberUid = member.uid);
+    setState(() {
+      _selectedMemberUid = member.uid;
+      if (member.uid != ref.read(currentUserProvider).valueOrNull?.uid) {
+        _selectedReceiver = member.uid;
+      }
+    });
     _mapController.move(location, 16);
+  }
+
+  void _onReceiverChanged(String? val, AppUser currentUser) {
+    setState(() {
+      _selectedReceiver = val!;
+      if (val != 'all' && val != currentUser.uid) {
+        _selectedMemberUid = val;
+      } else {
+        _selectedMemberUid = null;
+      }
+    });
+  }
+
+  void _showRouteMap(BuildContext context, AppUser currentUser) {
+    final targetUid = _selectedReceiver != 'all' ? _selectedReceiver : currentUser.uid;
+    final targetName = _selectedReceiver != 'all'
+        ? ref.read(groupMembersProvider).valueOrNull?.firstWhere((m) => m.uid == targetUid, orElse: () => currentUser).displayName
+        : currentUser.displayName;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => _RouteMapModal(
+        memberUid: targetUid,
+        memberName: targetName ?? 'Miembro',
+        groupId: currentUser.groupId!,
+      ),
+    );
   }
 
   @override
@@ -228,7 +267,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
 
-          // Banner de optimizacion de bateria
           if (showBatteryBanner)
             Positioned(
               top: MediaQuery.of(context).padding.top + 60,
@@ -278,6 +316,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
 
+          // Bento inferior
           Positioned(
             left: 12,
             right: 12,
@@ -293,7 +332,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildReceiverSelector(members, user),
+                  Row(
+                    children: [
+                      Expanded(child: _buildReceiverSelector(members, user)),
+                      const SizedBox(width: 8),
+                      _glassMiniButton(
+                        icon: Icons.map,
+                        onTap: () => _showRouteMap(context, user),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 12),
                   _buildMemberChips(members, user),
                   const SizedBox(height: 12),
@@ -351,7 +399,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             side: BorderSide(
               color: isSelected ? AppColors.accentBlue : Colors.white.withOpacity(0.1),
             ),
-            onPressed: hasLocation ? () => _centerOnMember(member, loc) : null,
+            onPressed: hasLocation
+                ? () {
+                    _centerOnMember(member, loc);
+                  }
+                : null,
           );
         },
       ),
@@ -378,7 +430,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           dropdownColor: AppColors.modalBg,
           isExpanded: true,
           icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
-          onChanged: (val) => setState(() => _selectedReceiver = val!),
+          onChanged: (val) => _onReceiverChanged(val, currentUser),
           items: items,
         ),
       ),
@@ -504,6 +556,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
           child: Icon(icon, color: Colors.white, size: 20),
         ),
+      ),
+    );
+  }
+
+  Widget _glassMiniButton({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: Colors.white.withOpacity(0.1),
+          border: Border.all(color: Colors.white.withOpacity(0.2)),
+        ),
+        child: Icon(icon, color: Colors.white, size: 20),
       ),
     );
   }
@@ -794,6 +862,196 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Enviado: $text')));
       },
       child: Text(text),
+    );
+  }
+}
+
+// ============================================================================
+// MODAL DE RECORRIDO EN MAPA (Bento flotante)
+// ============================================================================
+class _RouteMapModal extends ConsumerWidget {
+  final String memberUid;
+  final String memberName;
+  final String groupId;
+
+  const _RouteMapModal({
+    required this.memberUid,
+    required this.memberName,
+    required this.groupId,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final since = DateTime.now().subtract(const Duration(days: 1)); // ultimas 24h
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      height: MediaQuery.of(context).size.height * 0.65,
+      decoration: BoxDecoration(
+        color: AppColors.modalBg,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 30)],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Column(
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.05),
+                border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.1))),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.route, color: Colors.blue.shade300, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Recorrido: $memberName',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                  ),
+                  Text(
+                    'Ultimas 24h',
+                    style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            // Mapa
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('locations')
+                    .doc(memberUid)
+                    .collection('history')
+                    .where('groupId', isEqualTo: groupId)
+                    .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+                    .orderBy('timestamp', descending: false)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Center(child: Text('Error: ${snapshot.error}', style: const TextStyle(color: Colors.white70)));
+                  }
+
+                  final docs = snapshot.data?.docs ?? [];
+                  if (docs.isEmpty) {
+                    return Center(
+                      child: Text(
+                        'No hay recorrido registrado\npara este miembro en las ultimas 24 horas.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                      ),
+                    );
+                  }
+
+                  final points = docs.map((d) {
+                    final data = d.data() as Map<String, dynamic>;
+                    return LatLng(
+                      (data['lat'] as num).toDouble(),
+                      (data['lng'] as num).toDouble(),
+                    );
+                  }).toList();
+
+                  final center = points.isNotEmpty ? points[points.length ~/ 2] : const LatLng(-34.6, -58.38);
+
+                  return FlutterMap(
+                    options: MapOptions(
+                      initialCenter: center,
+                      initialZoom: 14,
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.agiletask.miclan',
+                      ),
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: points,
+                            color: Colors.blue.withOpacity(0.8),
+                            strokeWidth: 4,
+                          ),
+                        ],
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          // Inicio
+                          Marker(
+                            point: points.first,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(Icons.trip_origin, color: Colors.green, size: 28),
+                          ),
+                          // Fin
+                          Marker(
+                            point: points.last,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(Icons.location_on, color: Colors.red, size: 32),
+                          ),
+                        ],
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            // Footer con contador
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.03),
+                border: Border(top: BorderSide(color: Colors.white.withOpacity(0.1))),
+              ),
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('locations')
+                    .doc(memberUid)
+                    .collection('history')
+                    .where('groupId', isEqualTo: groupId)
+                    .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+                    .orderBy('timestamp', descending: false)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  final count = snapshot.data?.docs.length ?? 0;
+                  return Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '$count puntos de ruta',
+                        style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                      ),
+                      Row(
+                        children: [
+                          const Icon(Icons.trip_origin, color: Colors.green, size: 14),
+                          const SizedBox(width: 4),
+                          Text('Inicio', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
+                          const SizedBox(width: 12),
+                          const Icon(Icons.location_on, color: Colors.red, size: 14),
+                          const SizedBox(width: 4),
+                          Text('Fin', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
+                        ],
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -3,12 +3,12 @@ import 'dart:typed_data';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 // ============================================================================
-// NOTIFICATION SERVICE - Notificaciones Locales (triggered solo por FCM)
+// NOTIFICATION SERVICE - Notificaciones Locales
 // ============================================================================
-// NOTA: Las notificaciones de chat/alertas ya NO se generan desde un listener
-// de Firestore. Ahora solo llegan via FCM (foreground onMessage + background
-// handler). Esto elimina las notificaciones dobles y el reciclaje de mensajes
-// al reabrir la app.
+// FIX 2026-08-07: Eliminados startListeningAlerts/stopListeningAlerts.
+// Las notificaciones ahora solo llegan via FCM (data-only payload).
+// El background handler y el foreground handler son los unicos que
+// llaman a showLocalNotification. No hay listener de Firestore.
 // ============================================================================
 
 class NotificationService {
