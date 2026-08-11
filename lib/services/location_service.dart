@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'battery_optimization_service.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'location_config.dart';
@@ -128,6 +129,11 @@ class LocationService {
     _currentUid = uid;
     _currentGroupId = groupId;
 
+    // Reporta el estado apenas arranca (no espera al primer ciclo del
+    // timer de sync), para que el panel de monitoreo del admin refleje
+    // "App activa" de inmediato.
+    unawaited(_reportStatus(uid, groupId, 'foreground'));
+
     try {
       final currentPos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
@@ -187,6 +193,11 @@ class LocationService {
     final uid = _currentUid;
     final groupId = _currentGroupId;
     if (uid == null || groupId == null) return;
+
+    // Reporta estado en cada ciclo (1 o 5 min): mantiene `updatedAt` fresco
+    // en deviceStatus aunque el usuario este quieto, para que el panel de
+    // monitoreo del admin no lo muestre como "desconectado" sin estarlo.
+    unawaited(_reportStatus(uid, groupId, 'foreground'));
 
     if (_lastPosition != null) {
       final lastRecorded = await loadLastRecordedPosition();
@@ -267,6 +278,30 @@ class LocationService {
         await _firestore.updateLocation(uid, groupId, loc['lat'], loc['lng']);
         await _db.markLocationSynced(loc['id']);
       } catch (_) {}
+    }
+  }
+
+  /// Reporta el estado de conexion de este dispositivo a Firestore
+  /// (`deviceStatus/{uid}`) para el panel de monitoreo del admin
+  /// (Configuracion > Estado de Miembros). No debe romper el tracking si
+  /// falla (sin señal, permiso denegado, etc.), por eso va en su propio
+  /// try/catch y se llama con `unawaited()` desde los puntos de arriba.
+  Future<void> _reportStatus(String uid, String groupId, String appState) async {
+    try {
+      final interval = await getTrackingInterval();
+      final bgGranted = await hasBackgroundPermission();
+      final batteryOk = await BatteryOptimizationService.isIgnoring();
+      await _firestore.updateDeviceStatus(
+        uid,
+        groupId,
+        appState: appState,
+        batterySaver: interval == kBatterySaverTrackingInterval,
+        backgroundLocationGranted: bgGranted,
+        batteryOptimizationIgnored: batteryOk,
+        trackingIntervalMinutes: interval.inMinutes,
+      );
+    } catch (_) {
+      // No romper el tracking si falla el reporte de estado.
     }
   }
 

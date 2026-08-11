@@ -4,6 +4,8 @@
 
 **Relación con el informe anterior:** este documento **reemplaza a `MiClan_Informe_Tecnico_Integral_v3.md`**. Se mantiene el v3 en el repo por historial, pero está desactualizado en un punto central: describía una arquitectura de GPS que solo funcionaba en primer plano (`flutter_background_service` "declarado pero no usado"). Esa arquitectura cambió por completo en la sesión del 2026-08-10: ahora hay un servicio nativo de Android real corriendo en su propio isolate para el tracking en segundo plano. Este informe documenta el estado **actual y verificado en dispositivo real**.
 
+**Actualización 2026-08-11:** se agregó la colección `deviceStatus` + el panel "Estado de Miembros" (Configuración, solo admin) para poder diagnosticar remotamente por qué un miembro deja de reportar ubicación, sin necesitar acceso físico a su teléfono — ver sección 10.7. Motivo: se reportó un caso real de un miembro sin un solo movimiento registrado en 2 horas pese a haber salido del perímetro; sin telemetría remota no había forma de saber si el problema era falta de permiso de ubicación en segundo plano, optimización de batería del fabricante matando el servicio, o algo más, sin pedirle el teléfono físicamente. El GPS en sí (secciones 10.1-10.6) no tuvo cambios de código en esta actualización — el panel es la herramienta para diagnosticar el próximo paso con datos reales en vez de otra ronda de hipótesis por lectura de código (ver 13.8).
+
 ---
 
 ## 1. Resumen del producto — idea y objetivo
@@ -299,6 +301,15 @@ locations/{uid}                    # ubicación actual (para el mapa en vivo)
     timestamp: Timestamp (server)
     recordedAt: string (ISO, cliente)
 
+deviceStatus/{uid}                 # estado de tracking en vivo, para el panel de monitoreo (sección 10.7)
+  groupId: string
+  appState: 'foreground' | 'background'
+  batterySaver: bool
+  backgroundLocationGranted: bool
+  batteryOptimizationIgnored: bool
+  trackingIntervalMinutes: number
+  updatedAt: Timestamp (server)
+
 alerts/{alertId}                   # dispara la Cloud Function; feed de chat Y canal de alertas
   groupId: string
   senderId: string                 # o 'system' para avisos automáticos (ej. expulsión)
@@ -316,7 +327,7 @@ alerts/{alertId}                   # dispara la Cloud Function; feed de chat Y c
 
 ---
 
-## 7. Reglas de seguridad de Firestore (`firestore.rules`, texto completo — vigente, sin cambios en esta sesión)
+## 7. Reglas de seguridad de Firestore (`firestore.rules`, texto completo)
 
 ```js
 rules_version = '2';
@@ -383,6 +394,16 @@ service cloud.firestore {
                        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId ==
                        get(/databases/$(database)/documents/locations/$(uid)).data.groupId;
       }
+    }
+
+    // Estado de conexion/tracking de cada dispositivo (sección 10.7),
+    // reportado por la propia app para que el admin pueda monitorear el
+    // grupo desde Configuracion sin acceso fisico a cada telefono. Mismo
+    // criterio de permisos que `locations`.
+    match /deviceStatus/{uid} {
+      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null &&
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == resource.data.groupId;
     }
 
     match /alerts/{alertId} {
@@ -487,6 +508,7 @@ Chat grupal sobre la colección `alerts` (comparte backend con las alertas). Sop
 3. **Zona Segura (geofence)** — solo admin: crear/eliminar un círculo (centro + radio). *(La detección de cruce existe en código pero no está conectada, ver 12.4.)*
 4. **Mensajes Rápidos** — solo admin: editar los 10 botones configurables (4 + 3 + 3).
 5. **Caja Negra del Grupo** — solo admin: selector de miembro + tabla de últimos registros + mismo modal de mapa con recorrido que en Home.
+5.1. **Estado de Miembros** — solo admin, agregado 2026-08-11: ventana flotante con el estado de conexión en vivo de cada miembro (App activa / Segundo plano / Desconectado), modo ahorro, permiso de ubicación en segundo plano, optimización de batería, e "última actualización". Ver detalle completo en sección 10.7.
 6. **Batería**: switch "Modo ahorro" (cambia el intervalo de GPS entre 1 min/50m y 5 min/200m, ver sección 10) + acceso directo a desactivar la optimización de batería del sistema.
 7. **Caja Negra Local**: **Exportar backup** (`share_plus`, JSON con ubicaciones + alertas locales) y **Importar backup** (`file_picker`, reemplaza los datos locales — **ambas funciones están implementadas**, a diferencia de lo que decía el informe anterior).
 8. **Grupo/Cuenta**:
@@ -516,6 +538,7 @@ groupAlertsProvider        : StreamProvider<List<AppAlert>>        // depende de
 activeSOSProvider          : StreamProvider<AppAlert?>             // depende de currentGroupProvider.id
 geofenceZoneProvider       : StreamProvider<GeofenceZone?>         // depende de currentGroupProvider.id
 groupQuickMessagesProvider : StreamProvider<QuickMessagesConfig>   // depende de currentGroupProvider.id
+groupDeviceStatusProvider  : StreamProvider<List<DeviceStatus>>    // depende de currentGroupProvider.id (sección 10.7)
 ```
 
 Todos los providers que dependen de `currentGroupProvider` devuelven `Stream.value(vacío/null)` si todavía no hay grupo, para no romper la UI. `currentUserProvider` es la raíz de toda la cadena — cualquier problema con su stream (ver sección 12) se propaga a todos los demás.
@@ -588,6 +611,48 @@ didChangeAppLifecycleState(paused|detached) → _handoffToBackgroundTracking():
 5. Si en algún equipo puntual el GPS se corta igual estando dormido, sospechar primero del **gestor de batería agresivo del fabricante** (Xiaomi/MIUI, Huawei, Samsung en algunos modos) — requiere habilitar manualmente "inicio automático"/"sin restricciones" en los ajustes específicos de esa marca, no es resoluble solo con código Android estándar.
 
 **Lección de esta sesión, para no repetir el patrón "fix por lectura de código → no cambia nada":** ninguna de las hipótesis basadas solo en leer el código coincidía con la causa real. Conseguir `adb logcat` en un dispositivo real y ver la secuencia exacta de eventos fue lo que permitió encontrar la causa real en minutos, después de rondas enteras de fixes "correctos por código" que no cambiaban el síntoma reportado.
+
+### 10.7 Panel "Estado de Miembros" (monitoreo remoto, agregado 2026-08-11)
+
+Configuración → (solo admin, debajo de "Caja Negra del Grupo") → **"Ver estado de conexión"** abre una ventana flotante que lista a todos los miembros del grupo (incluido el propio admin) con su estado de tracking en tiempo real, sin necesitar acceso físico al teléfono de nadie.
+
+**Colección nueva `deviceStatus/{uid}`:**
+```
+deviceStatus/{uid}
+  groupId: string
+  appState: 'foreground' | 'background'
+  batterySaver: bool
+  backgroundLocationGranted: bool     # LocationPermission.always otorgado?
+  batteryOptimizationIgnored: bool    # true = app excluida de optimización (bien)
+  trackingIntervalMinutes: number     # 1 o 5, segun modo ahorro
+  updatedAt: Timestamp (server)
+```
+
+Regla de seguridad (mismo criterio que `locations`): cada uno escribe solo su propio doc, lee cualquiera del mismo grupo.
+```js
+match /deviceStatus/{uid} {
+  allow write: if request.auth != null && request.auth.uid == uid;
+  allow read: if request.auth != null &&
+                 get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == resource.data.groupId;
+}
+```
+
+**Quién escribe, y cuándo** (`FirestoreService.updateDeviceStatus`, `SetOptions(merge: true)`):
+- `LocationService` (foreground): al arrancar `startTracking()` (inmediato, no espera el primer ciclo) y en cada `_runSyncCycle` (cada 1 o 5 min) — así `updatedAt` se mantiene fresco mientras el tracking en primer plano funciona, incluso con el usuario quieto.
+- `background_location_service.dart` (background): en cada `tick()`, **antes** del intento de obtener posición GPS (que va en su propio try/catch) — así el admin puede distinguir "el servicio de background no arranca" de "arranca pero el GPS puntual falla".
+- Ninguno de los dos escribe explícitamente `'stopped'` al detenerse — el handoff entre ambos hace que siempre haya uno u otro corriendo mientras el tracking está activo, y si ninguno logra arrancar (permiso denegado, GPS del sistema apagado), simplemente no llega ningún reporte nuevo, lo cual la UI interpreta como "desconectado" por antigüedad (ver abajo). Esto es intencional: no hace falta un estado "stopped" explícito, la ausencia de reportes recientes ya lo comunica.
+
+**Cómo se interpreta en la UI** (`_MemberStatusDialog` en `settings_screen.dart`): para cada miembro, se calcula la antigüedad del último `updatedAt` y se compara contra un umbral = `trackingIntervalMinutes × 3` (piso 6 min, techo 30 min, para no marcar "desconectado" por una demora normal de un ciclo). El estado mostrado:
+- **Sin datos** (gris): nunca llegó un reporte de ese uid.
+- **Desconectado / sin señal reciente** (rojo): hay un `deviceStatus` pero su `updatedAt` superó el umbral — **este es el caso del bug reportado** (miembro sin movimiento en horas).
+- **App activa** (verde): reporte reciente con `appState == 'foreground'`.
+- **Segundo plano** (azul): reporte reciente con `appState == 'background'`.
+
+Debajo del estado, cada tarjeta muestra: modo ahorro (sí/no), **permiso de ubicación en segundo plano otorgado** (en naranja si NO), **optimización de batería ignorada** (en naranja si NO — o sea, si la optimización sigue activa), intervalo configurado, y "última actualización: hace X min/h/d".
+
+**Por qué estos campos en particular:** `backgroundLocationGranted=false` o `batteryOptimizationIgnored=false` para un miembro puntual son, con alta probabilidad, la causa exacta de que dejen de reportar tras un rato con la app fuera de primer plano — son exactamente las dos causas que la sección 10.6 (guía práctica) ya identificaba como sospechosas, pero que antes solo se podían chequear con el teléfono físico en la mano. Ahora se ven remotamente, en tiempo real, para cualquier miembro del grupo.
+
+**Pendiente de este mismo caso:** con el panel ya desplegado, el siguiente paso para el bug reportado (miembro sin movimiento en 2hs) es que el admin abra este panel y vea el estado real de ese miembro — si aparece `backgroundLocationGranted: NO otorgado` o `batteryOptimizationIgnored: Activa`, esa es la causa confirmada y el fix es pedirle a ese miembro que lo habilite manualmente en Ajustes (la app ya tiene los banners de `HomeScreen` para esto, ver sección 8.4, punto 2 — el problema es que ese miembro nunca los atendió, o los banners no fueron suficientemente insistentes). Si en cambio aparece con todo "en verde" pero igual dejó de reportar, el problema es más profundo (ej. el fabricante mata el proceso pese a la exclusión de batería) y ahí sí hace falta seguir investigando con logcat en el teléfono de ese miembro puntual.
 
 ---
 

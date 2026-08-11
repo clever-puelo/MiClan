@@ -279,6 +279,46 @@ class QuickMessagesConfig {
       };
 }
 
+/// Estado de conexion/tracking de un dispositivo, reportado por la propia
+/// app (primer plano o el servicio de background) cada vez que graba un
+/// punto o simplemente "late". Permite al admin ver en Configuracion >
+/// Estado de Miembros si un miembro sigue activo, en que modo, y con que
+/// configuracion -- y diagnosticar remotamente por que dejo de reportar
+/// (permiso de ubicacion en 2do plano no otorgado, optimizacion de bateria
+/// activa, etc.) sin necesitar acceso fisico a su telefono.
+class DeviceStatus {
+  final String uid;
+  final String groupId;
+  final String appState; // 'foreground' | 'background'
+  final bool batterySaver;
+  final bool backgroundLocationGranted;
+  final bool batteryOptimizationIgnored;
+  final int trackingIntervalMinutes;
+  final DateTime? updatedAt;
+
+  DeviceStatus({
+    required this.uid,
+    required this.groupId,
+    required this.appState,
+    required this.batterySaver,
+    required this.backgroundLocationGranted,
+    required this.batteryOptimizationIgnored,
+    required this.trackingIntervalMinutes,
+    this.updatedAt,
+  });
+
+  factory DeviceStatus.fromMap(Map<String, dynamic> map, String uid) => DeviceStatus(
+        uid: uid,
+        groupId: map['groupId'] ?? '',
+        appState: map['appState'] ?? 'foreground',
+        batterySaver: map['batterySaver'] ?? false,
+        backgroundLocationGranted: map['backgroundLocationGranted'] ?? false,
+        batteryOptimizationIgnored: map['batteryOptimizationIgnored'] ?? false,
+        trackingIntervalMinutes: map['trackingIntervalMinutes'] ?? 1,
+        updatedAt: (map['updatedAt'] as Timestamp?)?.toDate(),
+      );
+}
+
 class UserSession {
   final String uid;
   final String email;

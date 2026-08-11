@@ -265,6 +265,45 @@ class FirestoreService {
   }
 
   // ==========================================================================
+  // ESTADO DE DISPOSITIVO (monitor de conexion GPS para el admin)
+  // ==========================================================================
+
+  /// Reporta el estado de tracking del propio dispositivo (foreground o
+  /// background) para que el admin pueda verlo en Configuracion > Estado de
+  /// Miembros. Se llama desde LocationService (al arrancar y en cada ciclo
+  /// de sync) y desde BackgroundLocationService (en cada tick), asi
+  /// `updatedAt` se mantiene fresco mientras el tracking efectivamente
+  /// funciona: si deja de actualizarse, el admin lo ve como "Desconectado"
+  /// aunque el ultimo `appState` guardado diga otra cosa.
+  Future<void> updateDeviceStatus(
+    String uid,
+    String groupId, {
+    required String appState,
+    required bool batterySaver,
+    required bool backgroundLocationGranted,
+    required bool batteryOptimizationIgnored,
+    required int trackingIntervalMinutes,
+  }) async {
+    await _db.collection('deviceStatus').doc(uid).set({
+      'groupId': groupId,
+      'appState': appState,
+      'batterySaver': batterySaver,
+      'backgroundLocationGranted': backgroundLocationGranted,
+      'batteryOptimizationIgnored': batteryOptimizationIgnored,
+      'trackingIntervalMinutes': trackingIntervalMinutes,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Stream<List<DeviceStatus>> getGroupDeviceStatusStream(String groupId) {
+    return selfHealingStream(() => _db
+        .collection('deviceStatus')
+        .where('groupId', isEqualTo: groupId)
+        .snapshots()
+        .map((snap) => snap.docs.map((d) => DeviceStatus.fromMap(d.data(), d.id)).toList()));
+  }
+
+  // ==========================================================================
   // MENSAJES RAPIDOS CONFIGURABLES (admin)
   // ==========================================================================
 

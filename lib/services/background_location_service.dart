@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../firebase_options.dart';
+import 'battery_optimization_service.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'location_config.dart';
@@ -84,6 +85,32 @@ class BackgroundLocationService {
   }
 }
 
+/// Reporta el estado de conexion de este dispositivo a Firestore
+/// (`deviceStatus/{uid}`) para el panel de monitoreo del admin
+/// (Configuracion > Estado de Miembros). Se llama en cada tick, ANTES del
+/// intento de obtener posicion (que va en su propio try/catch), para que
+/// el admin sepa que el servicio de background sigue vivo y "tickeando"
+/// aunque el GPS puntual falle momentaneamente -- distingue "el servicio
+/// no arranca" de "el servicio arranca pero el GPS no responde".
+Future<void> _reportStatus(FirestoreService firestore, String uid, String groupId) async {
+  try {
+    final interval = await getTrackingInterval();
+    final permission = await Geolocator.checkPermission();
+    final batteryOk = await BatteryOptimizationService.isIgnoring();
+    await firestore.updateDeviceStatus(
+      uid,
+      groupId,
+      appState: 'background',
+      batterySaver: interval == kBatterySaverTrackingInterval,
+      backgroundLocationGranted: permission == LocationPermission.always,
+      batteryOptimizationIgnored: batteryOk,
+      trackingIntervalMinutes: interval.inMinutes,
+    );
+  } catch (_) {
+    // No romper el servicio si falla el reporte de estado.
+  }
+}
+
 @pragma('vm:entry-point')
 void _onServiceStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
@@ -106,6 +133,8 @@ void _onServiceStart(ServiceInstance service) async {
     final uid = prefs.getString(_kPrefUid);
     final groupId = prefs.getString(_kPrefGroupId);
     if (uid == null || groupId == null) return;
+
+    unawaited(_reportStatus(firestore, uid, groupId));
 
     try {
       final position = await Geolocator.getCurrentPosition(

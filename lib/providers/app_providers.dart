@@ -68,3 +68,12 @@ final groupQuickMessagesProvider = StreamProvider<QuickMessagesConfig>((ref) {
   if (group == null) return Stream.value(QuickMessagesConfig.defaultConfig);
   return ref.watch(firestoreServiceProvider).getQuickMessagesStream(group.id);
 });
+
+// Estado de conexion/tracking de cada miembro del grupo (App activa /
+// segundo plano / etc.), para el panel de monitoreo del admin en
+// Configuracion > Estado de Miembros.
+final groupDeviceStatusProvider = StreamProvider<List<DeviceStatus>>((ref) {
+  final group = ref.watch(currentGroupProvider).valueOrNull;
+  if (group == null) return Stream.value([]);
+  return ref.watch(firestoreServiceProvider).getGroupDeviceStatusStream(group.id);
+});

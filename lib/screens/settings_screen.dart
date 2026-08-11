@@ -120,6 +120,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               onTap: () => _showBlackBoxDialog(context, group!, user!),
             ),
             _divider(),
+            // Estado de Miembros (solo admin): monitoreo de conexion/GPS en
+            // tiempo real, para diagnosticar remotamente por que un miembro
+            // dejo de reportar (permisos, bateria, app cerrada) sin
+            // necesitar acceso fisico a su telefono.
+            _sectionTitle('Estado de Miembros'),
+            _glassTile(
+              label: '¿Qué hace?',
+              value: 'Muestra si cada miembro tiene la app activa, en segundo plano o desconectada, y por qué (permisos, batería).',
+            ),
+            _actionTile(
+              icon: Icons.wifi_tethering,
+              text: 'Ver estado de conexión',
+              subtitle: 'Activa / segundo plano / desconectado, por miembro',
+              color: Colors.greenAccent.shade400,
+              onTap: () => _showMemberStatusDialog(context, user!),
+            ),
+            _divider(),
           ],
           _sectionTitle('Batería'),
           SwitchListTile(
@@ -236,6 +253,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showDialog(
       context: context,
       builder: (ctx) => _BlackBoxDialog(group: group, adminUser: adminUser),
+    );
+  }
+
+  void _showMemberStatusDialog(BuildContext context, AppUser adminUser) {
+    showDialog(
+      context: context,
+      builder: (ctx) => _MemberStatusDialog(adminUser: adminUser),
     );
   }
 
@@ -1290,5 +1314,197 @@ class _BlackBoxRouteMapModalState extends ConsumerState<_BlackBoxRouteMapModal> 
         child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
       ),
     );
+  }
+}
+
+// ============================================================================
+// DIALOG ESTADO DE MIEMBROS (admin) - monitor de conexion/GPS
+// ============================================================================
+// Panel de monitoreo pedido tras reportarse un caso real de un miembro sin
+// ningun movimiento registrado en horas: junta groupMembersProvider (lista
+// de miembros) con groupDeviceStatusProvider (lo que cada dispositivo
+// reporta de si mismo, ver DeviceStatus / FirestoreService.updateDeviceStatus)
+// para que el admin pueda ver, sin acceso fisico al telefono de nadie:
+// - Si la app de ese miembro esta activa, en segundo plano, o no reporta
+//   hace rato (posible causa real del problema, no solo un sintoma).
+// - Si tiene el permiso de ubicacion "todo el tiempo" otorgado (sin el,
+//   Android corta el GPS en cuanto la app deja de estar en primer plano).
+// - Si tiene la optimizacion de bateria activa (puede matar el servicio de
+//   background en fabricantes agresivos).
+// - Modo ahorro y hace cuanto se actualizo por ultima vez.
+// ============================================================================
+class _MemberStatusDialog extends ConsumerWidget {
+  final AppUser adminUser;
+  const _MemberStatusDialog({required this.adminUser});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final membersAsync = ref.watch(groupMembersProvider);
+    final statusAsync = ref.watch(groupDeviceStatusProvider);
+
+    return Dialog(
+      backgroundColor: const Color(0xFF273758),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      insetPadding: const EdgeInsets.all(16),
+      child: Container(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.wifi_tethering, color: Colors.greenAccent.shade400, size: 28),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    'Estado de Miembros',
+                    style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white70),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Quién está conectado y cómo está grabando su ubicación ahora mismo',
+              style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            Flexible(
+              child: membersAsync.when(
+                data: (members) {
+                  final all = [adminUser, ...members.where((m) => m.uid != adminUser.uid)];
+                  final statuses = statusAsync.valueOrNull ?? [];
+                  return ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: all.length,
+                    itemBuilder: (ctx, i) {
+                      final member = all[i];
+                      DeviceStatus? status;
+                      for (final s in statuses) {
+                        if (s.uid == member.uid) {
+                          status = s;
+                          break;
+                        }
+                      }
+                      return _memberStatusCard(member, status, member.uid == adminUser.uid);
+                    },
+                  );
+                },
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (_, __) => const Text('Error cargando miembros', style: TextStyle(color: Colors.red)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _memberStatusCard(AppUser member, DeviceStatus? status, bool isSelf) {
+    final now = DateTime.now();
+    final updatedAt = status?.updatedAt;
+    final age = updatedAt != null ? now.difference(updatedAt) : null;
+    // Umbral de "reciente": el intervalo configurado (1 o 5 min) x 3, con
+    // piso de 6 min, para no marcar "desconectado" por una demora normal
+    // de un ciclo (ej. sin señal momentánea).
+    final expectedMinutes = status?.trackingIntervalMinutes ?? 1;
+    final staleThresholdMin = (expectedMinutes * 3).clamp(6, 30);
+    final isStale = age == null || age.inMinutes > staleThresholdMin;
+
+    late final String estadoLabel;
+    late final Color estadoColor;
+    late final IconData estadoIcon;
+    if (status == null) {
+      estadoLabel = 'Sin datos (nunca reportó)';
+      estadoColor = Colors.white38;
+      estadoIcon = Icons.help_outline;
+    } else if (isStale) {
+      estadoLabel = 'Desconectado / sin señal reciente';
+      estadoColor = Colors.redAccent;
+      estadoIcon = Icons.cloud_off;
+    } else if (status.appState == 'foreground') {
+      estadoLabel = 'App activa (primer plano)';
+      estadoColor = Colors.greenAccent.shade400;
+      estadoIcon = Icons.smartphone;
+    } else {
+      estadoLabel = 'Segundo plano';
+      estadoColor = Colors.blue.shade300;
+      estadoIcon = Icons.cloud_done;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.white.withOpacity(0.05),
+        border: Border.all(color: estadoColor.withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(estadoIcon, color: estadoColor, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isSelf ? '${member.displayName} (Yo)' : member.displayName,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(estadoLabel, style: TextStyle(color: estadoColor, fontSize: 12, fontWeight: FontWeight.w600)),
+          if (status != null) ...[
+            const SizedBox(height: 8),
+            _statusRow('Modo ahorro', status.batterySaver ? 'Sí (cada 5 min)' : 'No (cada 1 min)'),
+            _statusRow(
+              'Permiso ubicación 2do plano',
+              status.backgroundLocationGranted ? 'Otorgado' : 'NO otorgado',
+              ok: status.backgroundLocationGranted,
+            ),
+            _statusRow(
+              'Optimización de batería',
+              status.batteryOptimizationIgnored ? 'Ignorada (bien)' : 'Activa (puede matar el GPS)',
+              ok: status.batteryOptimizationIgnored,
+            ),
+            _statusRow('Última actualización', _agoText(age)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _statusRow(String label, String value, {bool? ok}) {
+    final color = ok == null ? Colors.white70 : (ok ? Colors.white70 : Colors.orangeAccent);
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 170,
+            child: Text(label, style: TextStyle(fontSize: 11.5, color: Colors.white.withOpacity(0.45))),
+          ),
+          Expanded(child: Text(value, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600))),
+        ],
+      ),
+    );
+  }
+
+  String _agoText(Duration? d) {
+    if (d == null) return '—';
+    if (d.inMinutes < 1) return 'ahora mismo';
+    if (d.inMinutes < 60) return 'hace ${d.inMinutes} min';
+    if (d.inHours < 24) return 'hace ${d.inHours} h';
+    return 'hace ${d.inDays} d';
   }
 }
