@@ -7,10 +7,19 @@ import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:android_intent_plus/android_intent.dart';
 import '../main.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
+import '../services/background_location_service.dart';
 import '../services/battery_optimization_service.dart';
+import '../services/location_service.dart';
+import '../widgets/app_footer.dart';
+
+/// Conversion aproximada de milimetros a pixeles logicos de Flutter, usada
+/// para "subir" la ventana de recorrido ~20mm segun lo pedido (no existe una
+/// unidad de mm nativa en Flutter, se aproxima con la densidad estandar).
+const double _kMmToLogicalPx = 3.78;
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -18,7 +27,7 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   final MapController _mapController = MapController();
   LatLng? _myLocation;
   bool _mapReady = false;
@@ -27,18 +36,60 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   String? _selectedMemberUid;
   StreamSubscription<Position>? _localPositionSub;
   bool? _batteryOptIgnored;
+  bool? _bgLocationGranted;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkLocationAndInit();
     _checkBatteryOptimization();
+    _checkBackgroundLocation();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _localPositionSub?.cancel();
     super.dispose();
+  }
+
+  // FIX 2026-08-09: al volver del segundo plano (por ej. despues de ir a
+  // Ajustes a otorgar "todo el tiempo" o desactivar la optimización de
+  // batería), se vuelven a chequear los permisos para que el cartel de
+  // arriba se borre solo, sin necesidad de recargar la app entera.
+  //
+  // FIX 2026-08-10: "handoff" de la grabación de ubicación segun el ciclo
+  // de vida. En primer plano se usa LocationService (stream de geolocator,
+  // responsivo por distancia recorrida). Al pasar a segundo plano (pantalla
+  // apagada, telefono dormido, o la app minimizada) ese tracking deja de
+  // grabar apenas Android congela el isolate principal, asi que se detiene
+  // y se arranca BackgroundLocationService: un servicio de Android real e
+  // independiente que sigue grabando un punto cada 1 o 5 min (segun lo
+  // configurado) hasta que la app vuelve a primer plano.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkBackgroundLocation();
+      _checkBatteryOptimization();
+      _resumeForegroundTracking();
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      _handoffToBackgroundTracking();
+    }
+  }
+
+  Future<void> _handoffToBackgroundTracking() async {
+    final user = ref.read(currentUserProvider).valueOrNull;
+    if (user?.groupId == null) return;
+    await ref.read(locationServiceProvider).stopTracking();
+    await BackgroundLocationService.start(user!.uid, user.groupId!);
+  }
+
+  Future<void> _resumeForegroundTracking() async {
+    final user = ref.read(currentUserProvider).valueOrNull;
+    if (user?.groupId == null) return;
+    await BackgroundLocationService.stop();
+    await ref.read(locationServiceProvider).startTracking(user!.uid, user.groupId!);
   }
 
   Future<void> _checkBatteryOptimization() async {
@@ -51,34 +102,66 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (mounted) setState(() => _batteryOptIgnored = granted);
   }
 
+  // FIX: el GPS solo sigue grabando con el telefono dormido si el usuario
+  // otorgo el permiso de ubicación "todo el tiempo" (background), no solo
+  // "mientras se usa la app". Este banner guia al usuario a habilitarlo.
+  Future<void> _checkBackgroundLocation() async {
+    final granted = await ref.read(locationServiceProvider).hasBackgroundPermission();
+    if (mounted) setState(() => _bgLocationGranted = granted);
+  }
+
+  Future<void> _requestBackgroundLocation() async {
+    // En Android 11+ el sistema solo ofrece "Permitir todo el tiempo" en
+    // Ajustes una vez que ya se tiene el permiso de primer plano; por eso
+    // se pide de nuevo y, si no alcanza, se abre la configuracion de la app.
+    await Geolocator.requestPermission();
+    final granted = await ref.read(locationServiceProvider).hasBackgroundPermission();
+    if (mounted) setState(() => _bgLocationGranted = granted);
+    if (!granted) {
+      await Geolocator.openAppSettings();
+      if (mounted) _checkBackgroundLocation();
+    }
+  }
+
   Future<void> _checkLocationAndInit() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled && mounted) {
-      _showLocationDialog('GPS apagado', 'Activa la ubicacion para usar el mapa.');
+      _showLocationDialog('GPS apagado', 'Activa la ubicación para usar el mapa.');
       setState(() => _locationChecked = true);
       return;
     }
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
+      // FIX: timeout de seguridad. El permiso de notificaciones ya se
+      // resolvio antes en main() (ver comentario ahi), asi que este pedido
+      // ya no deberia competir con otro dialogo nativo; el timeout es solo
+      // un resguardo extra para nunca dejar la pantalla colgada.
+      try {
+        permission = await Geolocator.requestPermission().timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        permission = await Geolocator.checkPermission();
+      }
       if (permission == LocationPermission.denied && mounted) {
-        _showLocationDialog('Permiso denegado', 'La app necesita acceso a tu ubicacion.');
+        _showLocationDialog('Permiso denegado', 'La app necesita acceso a tu ubicación.');
         setState(() => _locationChecked = true);
         return;
       }
     }
     if (permission == LocationPermission.deniedForever && mounted) {
-      _showLocationDialog('Permiso bloqueado', 'Ve a configuracion y habilita la ubicacion.');
+      _showLocationDialog('Permiso bloqueado', 'Ve a configuración y habilita la ubicación.');
       setState(() => _locationChecked = true);
       return;
     }
     await _initLocation();
-    setState(() => _locationChecked = true);
+    if (mounted) setState(() => _locationChecked = true);
+    _checkBackgroundLocation();
   }
 
   Future<void> _initLocation() async {
     try {
-      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
       if (!mounted) return;
       setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
       if (_mapReady && _myLocation != null) {
@@ -186,19 +269,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     return userAsync.when(
       data: (user) {
-        if (user == null) return _errorScaffold('No hay usuario activo');
+        if (user == null) {
+          return _errorScaffold(onRetry: () => ref.invalidate(currentUserProvider));
+        }
         return membersAsync.when(
           data: (members) => groupAsync.when(
             data: (group) => _buildUI(context, user, members, group, activeSOS),
             loading: () => _loadingScaffold(),
-            error: (e, _) => _errorScaffold('Error grupo: $e'),
+            error: (e, _) => _errorScaffold(onRetry: () => ref.invalidate(currentGroupProvider)),
           ),
           loading: () => _loadingScaffold(),
-          error: (e, _) => _errorScaffold('Error miembros: $e'),
+          error: (e, _) => _errorScaffold(onRetry: () => ref.invalidate(groupMembersProvider)),
         );
       },
       loading: () => _loadingScaffold(),
-      error: (e, _) => _errorScaffold('Error usuario: $e'),
+      error: (e, _) => _errorScaffold(onRetry: () => ref.invalidate(currentUserProvider)),
     );
   }
 
@@ -207,15 +292,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         body: Center(child: CircularProgressIndicator(color: Colors.blue)),
       );
 
-  Widget _errorScaffold(String msg) => Scaffold(
+  // FIX 2026-08-09: si igual llega a fallar un listener de Firestore (ej.
+  // red muy lenta, mas alla del margen que ya da _ensureFreshToken en
+  // AuthService), antes esta pantalla dejaba al usuario sin salida: los
+  // StreamProvider de Riverpod no se reintentan solos, asi que quedaba
+  // "pegada" hasta cerrar y reabrir la app. Ahora se agrega un botón de
+  // reintentar que invalida solo el provider que efectivamente fallo.
+  //
+  // FIX 2026-08-10, a pedido del usuario:
+  // - Ya no se muestra el error tecnico crudo ("Error grupo: $e", con la
+  //   excepción de Firestore/Dart completa): es lo primero que aparecia
+  //   justo despues de autorizar el GPS en una instalación nueva (mientras
+  //   el doc del usuario/grupo todavia se estaba creando en Firestore), y
+  //   se veia como un error grave aunque era transitorio. Ahora es un
+  //   aviso generico y corto.
+  // - "Reintentar" ya NO reinvalida `currentUserProvider` cuando el que
+  //   fallo fue el grupo o los miembros: antes siempre re-suscribia los 3
+  //   providers (incluido el de usuario), lo que disparaba de nuevo todo
+  //   el flujo pesado de login (guardar token FCM, chequeo de sesión,
+  //   etc.) dando la sensación de "vuelve a pedir el login". Ahora cada
+  //   pantalla de error reintenta unicamente el stream que se rompio.
+  Widget _errorScaffold({required VoidCallback onRetry}) => Scaffold(
         backgroundColor: AppColors.background,
-        body: Center(child: Text(msg, style: const TextStyle(color: Colors.white70))),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.wifi_off, color: Colors.white38, size: 40),
+              const SizedBox(height: 12),
+              const Text(
+                'Problemas de comunicación, reintentá.',
+                style: TextStyle(color: Colors.white70),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
       );
 
   Widget _buildUI(BuildContext context, AppUser user, List<AppUser> members, AppGroup? group, AppAlert? activeSOS) {
     final isAdmin = user.uid == group?.ownerId;
     final bottomPad = MediaQuery.of(context).padding.bottom;
     final showBatteryBanner = _batteryOptIgnored == false;
+    final showBgLocationBanner = _bgLocationGranted == false;
+    final bannersShown = (showBatteryBanner ? 1 : 0) + (showBgLocationBanner ? 1 : 0);
+    final bannersHeight = bannersShown * 56;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -237,7 +364,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       body: Stack(
         children: [
           Positioned.fill(
-            top: MediaQuery.of(context).padding.top + 60 + (showBatteryBanner ? 56 : 0),
+            top: MediaQuery.of(context).padding.top + 60 + bannersHeight,
             bottom: 260 + bottomPad,
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 12),
@@ -272,35 +399,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               top: MediaQuery.of(context).padding.top + 60,
               left: 12,
               right: 12,
-              child: GestureDetector(
+              child: _warningBanner(
+                icon: Icons.battery_alert,
+                text: 'Optimización de batería activa. Toca para permitir notificaciones y GPS en segundo plano.',
                 onTap: _requestBatteryOptimization,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Colors.amber.withOpacity(0.5)),
-                    boxShadow: [BoxShadow(color: Colors.amber.withOpacity(0.2), blurRadius: 10)],
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.battery_alert, color: Colors.amber, size: 22),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Optimizacion de bateria activa. Toca para permitir notificaciones y GPS en segundo plano.',
-                          style: TextStyle(color: Colors.amber.shade100, fontSize: 12, fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right, color: Colors.amber, size: 20),
-                    ],
-                  ),
-                ),
+              ),
+            ),
+
+          if (showBgLocationBanner)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 60 + (showBatteryBanner ? 56 : 0),
+              left: 12,
+              right: 12,
+              child: _warningBanner(
+                icon: Icons.location_on,
+                text: 'Falta permitir la ubicación "todo el tiempo". Toca para habilitarla y que el GPS siga grabando con el teléfono dormido.',
+                onTap: _requestBackgroundLocation,
               ),
             ),
 
           Positioned(
-            top: MediaQuery.of(context).padding.top + 60 + (showBatteryBanner ? 56 : 0),
+            top: MediaQuery.of(context).padding.top + 60 + bannersHeight,
             left: 16,
             right: 16,
             child: _sosButton(user, activeSOS),
@@ -345,35 +464,77 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   const SizedBox(height: 12),
                   _buildMemberChips(members, user),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(child: _quickBtn('Llegue', Colors.green, user)),
-                      const SizedBox(width: 8),
-                      Expanded(child: _quickBtn('Todo bien', Colors.blue, user)),
-                      const SizedBox(width: 8),
-                      Expanded(child: _quickBtn('Volviendo', Colors.orange, user)),
-                      const SizedBox(width: 8),
-                      Expanded(child: _customMsgBtn(user)),
-                    ],
-                  ),
+                  _buildQuickMessagesArea(members, user),
                 ],
               ),
             ),
+          ),
+
+          // Pie de copyright, en el hueco entre el bento y el borde inferior.
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: bottomPad + 6,
+            child: const Center(child: AppCopyrightFooter(fontSize: 9)),
           ),
         ],
       ),
     );
   }
 
+  Widget _warningBanner({required IconData icon, required String text, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.amber.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.amber.withOpacity(0.5)),
+          boxShadow: [BoxShadow(color: Colors.amber.withOpacity(0.2), blurRadius: 10)],
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: Colors.amber, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                text,
+                style: TextStyle(color: Colors.amber.shade100, fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: Colors.amber, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildMemberChips(List<AppUser> members, AppUser currentUser) {
+    // FIX: se quita al propio usuario ("miembro local") de estos chips,
+    // igual que ya estaba excluido del combo de destinatario: no tiene
+    // sentido enviarse un mensaje a uno mismo ni centrar el mapa en "mi"
+    // chip cuando ya existe el boton dedicado "Mi ubicación".
+    final otherMembers = members.where((m) => m.uid != currentUser.uid).toList();
+    if (otherMembers.isEmpty) {
+      return SizedBox(
+        height: 40,
+        child: Center(
+          child: Text(
+            'Todavía no hay otros miembros en el grupo',
+            style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12),
+          ),
+        ),
+      );
+    }
     return SizedBox(
       height: 40,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: members.length,
+        itemCount: otherMembers.length,
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
-          final member = members[index];
+          final member = otherMembers[index];
           final isSelected = member.uid == _selectedMemberUid;
           final loc = member.uid == currentUser.uid
               ? _myLocation
@@ -593,37 +754,187 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _quickBtn(String text, Color color, AppUser user) {
-    return GestureDetector(
-      onTap: () {
-        ref.read(firestoreServiceProvider).sendAlert(user, _selectedReceiver, 'quick_message', text);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Enviado: $text'), duration: const Duration(seconds: 1)),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          color: color.withOpacity(0.15),
-          border: Border.all(color: color.withOpacity(0.4)),
-        ),
-        child: Text(text, textAlign: TextAlign.center, style: TextStyle(color: color.withOpacity(0.9), fontSize: 12, fontWeight: FontWeight.w600)),
+  // ==========================================================================
+  // MENSAJES RAPIDOS
+  // --------------------------------------------------------------------------
+  // - Combo en "Todos": 4 botones preestablecidos y configurables.
+  //   FIX 2026-08-09: antes eran 3 preestablecidos + un 4to boton fijo
+  //   "(...)" de mensaje manual, que quedaba duplicado con el "(...)" del
+  //   bento lateral (siempre visible, arriba de "WP"). Se saco ese
+  //   duplicado; el 4to lugar ahora sale de la configuracion del admin
+  //   (cfg.allButtons[3], ver Configuracion > Mensajes Rapidos).
+  // - Combo en un miembro: 6 botones (3 preguntas arriba + 3 respuestas
+  //   abajo), tomados de la configuracion del admin (groupQuickMessagesProvider).
+  // - Bento lateral fijo (siempre visible) con "..." (mensaje manual) arriba
+  //   y "WP" (enlace a WhatsApp del miembro seleccionado) abajo.
+  // ==========================================================================
+  Widget _buildQuickMessagesArea(List<AppUser> members, AppUser user) {
+    final quickMsgs = ref.watch(groupQuickMessagesProvider).valueOrNull ?? QuickMessagesConfig.defaultConfig;
+    final isAllMode = _selectedReceiver == 'all';
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: isAllMode
+                ? _buildAllModeGrid(quickMsgs, user)
+                : _buildMemberModeGrid(quickMsgs, user),
+          ),
+          const SizedBox(width: 8),
+          _buildSideBento(user, members),
+        ],
       ),
     );
   }
 
-  Widget _customMsgBtn(AppUser user) {
+  Widget _buildAllModeGrid(QuickMessagesConfig cfg, AppUser user) {
+    return Row(
+      children: [
+        Expanded(child: _presetBtn(cfg.allButtons[0], Colors.green, user)),
+        const SizedBox(width: 8),
+        Expanded(child: _presetBtn(cfg.allButtons[1], Colors.blue, user)),
+        const SizedBox(width: 8),
+        Expanded(child: _presetBtn(cfg.allButtons[2], Colors.orange, user)),
+        const SizedBox(width: 8),
+        Expanded(child: _presetBtn(cfg.allButtons[3], Colors.red, user)),
+      ],
+    );
+  }
+
+  Widget _buildMemberModeGrid(QuickMessagesConfig cfg, AppUser user) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(child: _presetBtn(cfg.questionButtons[0], Colors.purple, user)),
+              const SizedBox(width: 8),
+              Expanded(child: _presetBtn(cfg.questionButtons[1], Colors.purple, user)),
+              const SizedBox(width: 8),
+              Expanded(child: _presetBtn(cfg.questionButtons[2], Colors.purple, user)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(child: _presetBtn(cfg.answerButtons[0], Colors.teal, user)),
+              const SizedBox(width: 8),
+              Expanded(child: _presetBtn(cfg.answerButtons[1], Colors.teal, user)),
+              const SizedBox(width: 8),
+              Expanded(child: _presetBtn(cfg.answerButtons[2], Colors.teal, user)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Bento lateral fijo: "..." (mensaje manual) arriba y "WP" (WhatsApp) abajo.
+  Widget _buildSideBento(AppUser user, List<AppUser> members) {
+    return SizedBox(
+      width: 52,
+      child: Column(
+        children: [
+          Expanded(
+            child: _sideBentoBtn(
+              label: '(...)',
+              color: Colors.purple,
+              onTap: () => _showCustomMessageDialog(user),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: _sideBentoBtn(
+              label: 'WP',
+              color: Colors.green,
+              onTap: () => _sendViaWhatsApp(members),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sideBentoBtn({required String label, required Color color, required VoidCallback onTap}) {
     return GestureDetector(
-      onTap: () => _showCustomMessageDialog(user),
+      onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
+        width: double.infinity,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
-          color: Colors.purple.withOpacity(0.15),
-          border: Border.all(color: Colors.purple.withOpacity(0.4)),
+          color: color.withOpacity(0.28),
+          border: Border.all(color: color.withOpacity(0.4)),
         ),
-        child: const Text('...', textAlign: TextAlign.center, style: TextStyle(color: Colors.purple, fontSize: 14, fontWeight: FontWeight.w600)),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+
+  /// Abre WhatsApp con un mensaje prellenado hacia el miembro seleccionado
+  /// en el combo, usando su telefono cargado en "Cuenta" (Configuración).
+  void _sendViaWhatsApp(List<AppUser> members) {
+    if (_selectedReceiver == 'all') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Seleccioná un miembro del combo para enviarle un WhatsApp')),
+      );
+      return;
+    }
+    final member = members.where((m) => m.uid == _selectedReceiver).toList();
+    final phone = member.isNotEmpty ? member.first.phone?.trim() : null;
+    if (phone == null || phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${member.isNotEmpty ? member.first.displayName : "Este miembro"} no tiene un teléfono cargado')),
+      );
+      return;
+    }
+    final digits = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+    final text = Uri.encodeComponent('Hola! Te escribo desde MiClan');
+    try {
+      final intent = AndroidIntent(
+        action: 'action_view',
+        data: 'https://wa.me/$digits?text=$text',
+      );
+      intent.launch();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir WhatsApp')),
+      );
+    }
+  }
+
+  Widget _presetBtn(QuickMessageItem item, Color color, AppUser user) {
+    return GestureDetector(
+      onTap: () {
+        ref.read(firestoreServiceProvider).sendAlert(user, _selectedReceiver, 'quick_message', item.message);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Enviado: ${item.title}'), duration: const Duration(seconds: 1)),
+        );
+      },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          color: color.withOpacity(0.28),
+          border: Border.all(color: color.withOpacity(0.4)),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          item.title,
+          textAlign: TextAlign.center,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
+        ),
       ),
     );
   }
@@ -666,13 +977,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.modalBg,
         title: const Text('Activar S.O.S?', style: TextStyle(color: Colors.white)),
-        content: const Text('Se enviara una alerta de panico a todo el grupo.', style: TextStyle(color: Colors.white70)),
+        content: const Text('Se enviara una alerta de pánico a todo el grupo.', style: TextStyle(color: Colors.white70)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () async {
-              await ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'SOS', 'ALERTA DE PANICO ACTIVADA!');
+              await ref.read(firestoreServiceProvider).sendAlert(user, 'all', 'SOS', 'ALERTA DE Pánico ACTIVADA!');
               if (mounted) Navigator.pop(ctx);
             },
             child: const Text('ENVIAR S.O.S', style: TextStyle(color: Colors.white)),
@@ -698,7 +1009,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.modalBg,
-        title: const Text('Cerrar sesion?', style: TextStyle(color: Colors.white)),
+        title: const Text('Cerrar sesión?', style: TextStyle(color: Colors.white)),
         content: const Text('Volveras a la pantalla de login.', style: TextStyle(color: Colors.white70)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
@@ -869,7 +1180,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 // ============================================================================
 // MODAL DE RECORRIDO EN MAPA (Bento flotante)
 // ============================================================================
-class _RouteMapModal extends ConsumerWidget {
+// FIX 2026-08-08:
+// - La ventana se sube ~20mm (via margin inferior extra) para que no quede
+//   pegada al borde de la pantalla.
+// - Se agregan dos sliders en la cabecera para elegir fecha/hora "desde" y
+//   "hasta" del muestreo (antes era un rango fijo de 24hs).
+// ============================================================================
+class _RouteMapModal extends ConsumerStatefulWidget {
   final String memberUid;
   final String memberName;
   final String groupId;
@@ -881,12 +1198,98 @@ class _RouteMapModal extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final since = DateTime.now().subtract(const Duration(days: 1)); // ultimas 24h
+  ConsumerState<_RouteMapModal> createState() => _RouteMapModalState();
+}
+
+class _RouteMapModalState extends ConsumerState<_RouteMapModal> {
+  late final DateTime _minDate = DateTime.now().subtract(const Duration(days: 30));
+  late final DateTime _maxDate = DateTime.now();
+  late double _fromMs = _maxDate.subtract(const Duration(hours: 24)).millisecondsSinceEpoch.toDouble();
+  late double _toMs = _maxDate.millisecondsSinceEpoch.toDouble();
+  final MapController _mapController = MapController();
+  int _lastFitCount = -1;
+
+  DateTime get _desde => DateTime.fromMillisecondsSinceEpoch(_fromMs.round());
+  DateTime get _hasta => DateTime.fromMillisecondsSinceEpoch(_toMs.round());
+
+  // FIX 2026-08-09: la fecha/hora del punto tocado se muestra en un cartel
+  // fijo dentro del propio bento del mapa (abajo), no como SnackBar: el
+  // SnackBar aparecia detras del modal y quedaba tapado.
+  DateTime? _selectedPointTime;
+
+  /// Marcadores en cada punto del recorrido (se muestran cada pocos puntos
+  /// si hay demasiados, para no saturar el mapa). El area tocable es mas
+  /// grande que el punto visible para que sea facil de tocar.
+  List<Marker> _timeMarkers(List<Map<String, dynamic>> docs, Color color) {
+    if (docs.isEmpty) return [];
+    const maxMarkers = 40;
+    final step = (docs.length / maxMarkers).ceil().clamp(1, docs.length);
+    final markers = <Marker>[];
+    for (var i = 0; i < docs.length; i += step) {
+      final data = docs[i];
+      final ts = data['timestamp'];
+      DateTime? dt;
+      if (ts is Timestamp) dt = ts.toDate();
+      final point = LatLng((data['lat'] as num).toDouble(), (data['lng'] as num).toDouble());
+      markers.add(
+        Marker(
+          point: point,
+          // FIX: area tocable mas grande (32x32) que el punto visible (10x10)
+          // para que sea mas facil "embocarle" con el dedo.
+          width: 32,
+          height: 32,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _showPointTime(dt),
+            child: Center(
+              child: Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: color,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return markers;
+  }
+
+  void _showPointTime(DateTime? dt) {
+    setState(() => _selectedPointTime = dt);
+  }
+
+  /// Ajusta el zoom/centro para que se vea el recorrido completo (ampliado
+  /// a los limites de los puntos cargados), en vez del zoom fijo anterior.
+  void _fitToRoute(List<LatLng> points) {
+    if (points.length == _lastFitCount) return;
+    _lastFitCount = points.length;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (points.length == 1) {
+        _mapController.move(points.first, 16);
+        return;
+      }
+      final bounds = LatLngBounds.fromPoints(points);
+      _mapController.fitCamera(
+        CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(48)),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // "Subir 20mm la ventana de recorrido": margen inferior extra ademas
+    // del margen simetrico habitual, para despegarla del borde inferior.
+    final raise = 20 * _kMmToLogicalPx;
 
     return Container(
-      margin: const EdgeInsets.all(16),
-      height: MediaQuery.of(context).size.height * 0.65,
+      margin: EdgeInsets.fromLTRB(16, 16, 16, 16 + raise),
+      height: MediaQuery.of(context).size.height * 0.68,
       decoration: BoxDecoration(
         color: AppColors.modalBg,
         borderRadius: BorderRadius.circular(24),
@@ -897,115 +1300,170 @@ class _RouteMapModal extends ConsumerWidget {
         borderRadius: BorderRadius.circular(24),
         child: Column(
           children: [
-            // Header
+            // Header con titulo + sliders de fecha/hora desde-hasta
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.05),
                 border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.1))),
               ),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.route, color: Colors.blue.shade300, size: 22),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Recorrido: $memberName',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-                    ),
+                  Row(
+                    children: [
+                      Icon(Icons.route, color: Colors.blue.shade300, size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Recorrido: ${widget.memberName}',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
                   ),
-                  Text(
-                    'Ultimas 24h',
-                    style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                  Row(
+                    children: [
+                      Expanded(child: _dateTimeField(label: 'Desde', value: _desde, onTap: () => _pickDateTime(isFrom: true))),
+                      const SizedBox(width: 8),
+                      Expanded(child: _dateTimeField(label: 'Hasta', value: _hasta, onTap: () => _pickDateTime(isFrom: false))),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white70, size: 20),
-                    onPressed: () => Navigator.pop(context),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      _presetChip('24h', const Duration(hours: 24)),
+                      const SizedBox(width: 6),
+                      _presetChip('2 días', const Duration(days: 2)),
+                      const SizedBox(width: 6),
+                      _presetChip('7 días', const Duration(days: 7)),
+                      const SizedBox(width: 6),
+                      _presetChip('30 días', const Duration(days: 30)),
+                    ],
                   ),
                 ],
               ),
             ),
             // Mapa
             Expanded(
-              child: StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('locations')
-                    .doc(memberUid)
-                    .collection('history')
-                    .where('groupId', isEqualTo: groupId)
-                    .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
-                    .orderBy('timestamp', descending: false)
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (snapshot.hasError) {
-                    return Center(child: Text('Error: ${snapshot.error}', style: const TextStyle(color: Colors.white70)));
-                  }
+              child: Stack(
+                children: [
+                  StreamBuilder<List<Map<String, dynamic>>>(
+                    stream: ref.read(firestoreServiceProvider).getLocationHistoryRangeStream(widget.memberUid, _desde, _hasta),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      if (snapshot.hasError) {
+                        return Center(child: Text('Error: ${snapshot.error}', style: const TextStyle(color: Colors.white70)));
+                      }
 
-                  final docs = snapshot.data?.docs ?? [];
-                  if (docs.isEmpty) {
-                    return Center(
-                      child: Text(
-                        'No hay recorrido registrado\npara este miembro en las ultimas 24 horas.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white.withOpacity(0.5)),
-                      ),
-                    );
-                  }
-
-                  final points = docs.map((d) {
-                    final data = d.data() as Map<String, dynamic>;
-                    return LatLng(
-                      (data['lat'] as num).toDouble(),
-                      (data['lng'] as num).toDouble(),
-                    );
-                  }).toList();
-
-                  final center = points.isNotEmpty ? points[points.length ~/ 2] : const LatLng(-34.6, -58.38);
-
-                  return FlutterMap(
-                    options: MapOptions(
-                      initialCenter: center,
-                      initialZoom: 14,
-                    ),
-                    children: [
-                      TileLayer(
-                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.agiletask.miclan',
-                      ),
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                            points: points,
-                            color: Colors.blue.withOpacity(0.8),
-                            strokeWidth: 4,
+                      final docs = (snapshot.data ?? [])
+                          .where((d) => d['groupId'] == widget.groupId)
+                          .toList();
+                      if (docs.isEmpty) {
+                        return Center(
+                          child: Text(
+                            'No hay recorrido registrado\npara este miembro en el rango seleccionado.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.white.withOpacity(0.5)),
                           ),
-                        ],
-                      ),
-                      MarkerLayer(
-                        markers: [
-                          // Inicio
-                          Marker(
-                            point: points.first,
-                            width: 40,
-                            height: 40,
-                            child: const Icon(Icons.trip_origin, color: Colors.green, size: 28),
+                        );
+                      }
+
+                      final points = docs.map((data) {
+                        return LatLng(
+                          (data['lat'] as num).toDouble(),
+                          (data['lng'] as num).toDouble(),
+                        );
+                      }).toList();
+
+                      _fitToRoute(points);
+
+                      final center = points.isNotEmpty ? points[points.length ~/ 2] : const LatLng(-34.6, -58.38);
+
+                      return FlutterMap(
+                        mapController: _mapController,
+                        options: MapOptions(
+                          initialCenter: center,
+                          initialZoom: 14,
+                        ),
+                        children: [
+                          TileLayer(
+                            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            userAgentPackageName: 'com.agiletask.miclan',
                           ),
-                          // Fin
-                          Marker(
-                            point: points.last,
-                            width: 40,
-                            height: 40,
-                            child: const Icon(Icons.location_on, color: Colors.red, size: 32),
+                          PolylineLayer(
+                            polylines: [
+                              Polyline(
+                                points: points,
+                                color: Colors.blue.withOpacity(0.8),
+                                strokeWidth: 4,
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
+                          MarkerLayer(markers: _timeMarkers(docs, Colors.blue.shade300)),
+                          MarkerLayer(
+                            markers: [
+                              // Inicio
+                              Marker(
+                                point: points.first,
+                                width: 40,
+                                height: 40,
+                                child: const Icon(Icons.trip_origin, color: Colors.green, size: 28),
+                              ),
+                              // Fin
+                              Marker(
+                                point: points.last,
+                                width: 40,
+                                height: 40,
+                                child: const Icon(Icons.location_on, color: Colors.red, size: 32),
+                              ),
+                            ],
+                          ),
                     ],
                   );
                 },
+              ),
+                  // Cartel de fecha/hora del punto tocado, dentro del bento
+                  // del mapa (no un SnackBar, que quedaba tapado por el modal).
+                  if (_selectedPointTime != null)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 12,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.75),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white.withOpacity(0.15)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.access_time, color: Colors.blue.shade200, size: 16),
+                            const SizedBox(width: 8),
+                            Text(
+                              DateFormat('dd/MM/yyyy HH:mm:ss').format(_selectedPointTime!),
+                              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: () => setState(() => _selectedPointTime = null),
+                              child: const Icon(Icons.close, color: Colors.white54, size: 16),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
             // Footer con contador
@@ -1015,17 +1473,10 @@ class _RouteMapModal extends ConsumerWidget {
                 color: Colors.white.withOpacity(0.03),
                 border: Border(top: BorderSide(color: Colors.white.withOpacity(0.1))),
               ),
-              child: StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('locations')
-                    .doc(memberUid)
-                    .collection('history')
-                    .where('groupId', isEqualTo: groupId)
-                    .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
-                    .orderBy('timestamp', descending: false)
-                    .snapshots(),
+              child: StreamBuilder<List<Map<String, dynamic>>>(
+                stream: ref.read(firestoreServiceProvider).getLocationHistoryRangeStream(widget.memberUid, _desde, _hasta),
                 builder: (context, snapshot) {
-                  final count = snapshot.data?.docs.length ?? 0;
+                  final count = (snapshot.data ?? []).where((d) => d['groupId'] == widget.groupId).length;
                   return Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1051,6 +1502,84 @@ class _RouteMapModal extends ConsumerWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _dateTimeField({required String label, required DateTime value, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: Colors.white.withOpacity(0.06),
+          border: Border.all(color: Colors.white.withOpacity(0.15)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(label, style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 10)),
+                Text(
+                  DateFormat('dd/MM/yy HH:mm').format(value),
+                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+            const Icon(Icons.edit_calendar, color: Colors.white54, size: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// FIX 2026-08-09: se reemplazan los sliders (poco precisos para elegir
+  /// fecha/hora en pantallas chicas) por selectores nativos de fecha+hora,
+  /// mas chips de rango rapido.
+  Future<void> _pickDateTime({required bool isFrom}) async {
+    final current = isFrom ? _desde : _hasta;
+    final date = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: _minDate,
+      lastDate: _maxDate,
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(current));
+    if (time == null || !mounted) return;
+    var picked = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    if (picked.isBefore(_minDate)) picked = _minDate;
+    if (picked.isAfter(_maxDate)) picked = _maxDate;
+    setState(() {
+      if (isFrom) {
+        _fromMs = picked.millisecondsSinceEpoch.toDouble();
+        if (_fromMs > _toMs) _toMs = _fromMs;
+      } else {
+        _toMs = picked.millisecondsSinceEpoch.toDouble();
+        if (_toMs < _fromMs) _fromMs = _toMs;
+      }
+    });
+  }
+
+  Widget _presetChip(String label, Duration span) {
+    return GestureDetector(
+      onTap: () => setState(() {
+        _toMs = _maxDate.millisecondsSinceEpoch.toDouble();
+        final from = _maxDate.subtract(span);
+        _fromMs = (from.isBefore(_minDate) ? _minDate : from).millisecondsSinceEpoch.toDouble();
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          color: Colors.blue.withOpacity(0.15),
+          border: Border.all(color: Colors.blue.withOpacity(0.35)),
+        ),
+        child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
       ),
     );
   }

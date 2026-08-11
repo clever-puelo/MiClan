@@ -3,27 +3,77 @@ service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{uid} {
       allow create: if request.auth != null && request.auth.uid == uid;
-      allow read, update: if request.auth != null && request.auth.uid == uid;
+
+      // Lectura abierta a cualquier usuario autenticado: la necesita
+      // getGroupMembersStream para listar a todo el grupo (no solo a uno mismo).
+      allow read: if request.auth != null;
+
+      // Actualizacion: el propio usuario (perfil, fcmToken, sessionId), o el
+      // admin del grupo actual (para expulsar) o del grupo al que se asigna
+      // (para aprobar una solicitud de union).
+      allow update: if request.auth != null && (
+        request.auth.uid == uid ||
+        (resource.data.groupId != null &&
+         get(/databases/$(database)/documents/groups/$(resource.data.groupId)).data.ownerId == request.auth.uid) ||
+        (request.resource.data.groupId != null &&
+         get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.ownerId == request.auth.uid)
+      );
       allow delete: if false;
     }
+
     match /groups/{groupId} {
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
       allow update, delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+
       match /geofence/{docId} {
         allow read, write: if request.auth != null;
       }
+
+      // Configuracion del grupo (ej: mensajes rapidos). Lectura para
+      // cualquier miembro del grupo, escritura solo para el admin.
+      match /config/{docId} {
+        allow read: if request.auth != null &&
+                       get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == groupId;
+        allow write: if request.auth != null &&
+                       get(/databases/$(database)/documents/groups/$(groupId)).data.ownerId == request.auth.uid;
+      }
+
+      // Solicitudes de union al grupo (requestJoinGroup / approveRequest / rejectRequest)
+      match /pendingRequests/{uid} {
+        allow create: if request.auth != null && request.auth.uid == uid;
+        allow read: if request.auth != null &&
+                       (request.auth.uid == uid ||
+                        get(/databases/$(database)/documents/groups/$(groupId)).data.ownerId == request.auth.uid);
+        allow update, delete: if request.auth != null &&
+                       get(/databases/$(database)/documents/groups/$(groupId)).data.ownerId == request.auth.uid;
+      }
     }
+
     match /locations/{uid} {
       allow write: if request.auth != null && request.auth.uid == uid;
       allow read: if request.auth != null &&
                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == resource.data.groupId;
+
+      // Historial de ubicaciones (caja negra / recorrido en mapa)
+      match /history/{historyId} {
+        allow create: if request.auth != null && request.auth.uid == uid;
+        allow read: if request.auth != null &&
+                       get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId ==
+                       get(/databases/$(database)/documents/locations/$(uid)).data.groupId;
+      }
     }
+
     match /alerts/{alertId} {
       allow create: if request.auth != null &&
-                     request.resource.data.senderId == request.auth.uid &&
-                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == request.resource.data.groupId;
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == request.resource.data.groupId &&
+                     (request.resource.data.senderId == request.auth.uid ||
+                      (request.resource.data.senderId == 'system' &&
+                       get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.ownerId == request.auth.uid));
       allow read: if request.auth != null &&
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == resource.data.groupId;
+      // Necesario para cancelSOS (actualiza sosStatus/cancelledBy en un alert existente)
+      allow update: if request.auth != null &&
                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId == resource.data.groupId;
     }
   }

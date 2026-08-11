@@ -7,6 +7,7 @@ class AppUser {
   final String? groupId;
   final String? fcmToken;
   final String? sessionId;
+  final String? phone;
   final DateTime? createdAt;
 
   AppUser({
@@ -16,6 +17,7 @@ class AppUser {
     this.groupId,
     this.fcmToken,
     this.sessionId,
+    this.phone,
     this.createdAt,
   });
 
@@ -26,6 +28,7 @@ class AppUser {
         groupId: map['groupId'],
         fcmToken: map['fcmToken'],
         sessionId: map['sessionId'],
+        phone: map['phone'],
         createdAt: (map['createdAt'] as Timestamp?)?.toDate(),
       );
 
@@ -35,6 +38,7 @@ class AppUser {
         'groupId': groupId,
         'fcmToken': fcmToken,
         'sessionId': sessionId,
+        'phone': phone,
         'createdAt': createdAt != null ? Timestamp.fromDate(createdAt!) : FieldValue.serverTimestamp(),
       };
 
@@ -187,6 +191,91 @@ class GeofenceZone {
         'lng': lng,
         'radiusMeters': radiusMeters,
         'name': name,
+      };
+}
+
+/// Un boton de mensaje rapido configurable: tiene un titulo corto (lo que
+/// se ve en el boton) y el mensaje real que se envia al grupo/miembro.
+class QuickMessageItem {
+  final String title;
+  final String message;
+
+  const QuickMessageItem({required this.title, required this.message});
+
+  factory QuickMessageItem.fromMap(Map<String, dynamic>? map, QuickMessageItem fallback) {
+    if (map == null) return fallback;
+    final title = (map['title'] as String?)?.trim();
+    final message = (map['message'] as String?)?.trim();
+    return QuickMessageItem(
+      title: (title == null || title.isEmpty) ? fallback.title : title,
+      message: (message == null || message.isEmpty) ? fallback.message : message,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {'title': title, 'message': message};
+}
+
+/// Configuracion de los botones de mensaje fijo de un grupo. Se guarda en
+/// Firestore en `groups/{groupId}/config/quickMessages` y la cargan los
+/// miembros cuando la app esta en primer plano (ver groupQuickMessagesProvider).
+class QuickMessagesConfig {
+  // Modo "Todos": 4 botones preestablecidos y configurables.
+  // FIX 2026-08-09: antes eran 3 + un 4to boton fijo "(...)" de mensaje
+  // manual, que duplicaba al "(...)" del bento lateral (siempre visible,
+  // arriba del boton "WP"). Se saco ese duplicado y el 4to lugar ahora es
+  // un boton rapido configurable mas (ver Configuracion > Mensajes Rapidos).
+  final List<QuickMessageItem> allButtons;
+  // Modo "miembro seleccionado": 3 preguntas (arriba) + 3 respuestas (abajo).
+  final List<QuickMessageItem> questionButtons;
+  final List<QuickMessageItem> answerButtons;
+
+  const QuickMessagesConfig({
+    required this.allButtons,
+    required this.questionButtons,
+    required this.answerButtons,
+  });
+
+  static const defaultConfig = QuickMessagesConfig(
+    allButtons: [
+      QuickMessageItem(title: 'Llegue', message: 'Llegue bien'),
+      QuickMessageItem(title: 'Todo bien', message: 'Todo bien por aca'),
+      QuickMessageItem(title: 'Volviendo', message: 'Estoy volviendo'),
+      QuickMessageItem(title: 'Emergencia', message: 'Necesito ayuda, comunicate conmigo'),
+    ],
+    questionButtons: [
+      QuickMessageItem(title: 'Llamame', message: 'Llamame por favor'),
+      QuickMessageItem(title: 'Llegaste?', message: 'Ya llegaste?'),
+      QuickMessageItem(title: 'Todo bien?', message: 'Esta todo bien?'),
+    ],
+    answerButtons: [
+      QuickMessageItem(title: 'Volve', message: 'Volve pronto'),
+      QuickMessageItem(title: 'Donde estas?', message: 'Donde estas?'),
+      QuickMessageItem(title: 'Ya salgo', message: 'Ya salgo para alla'),
+    ],
+  );
+
+  factory QuickMessagesConfig.fromMap(Map<String, dynamic>? map) {
+    if (map == null) return defaultConfig;
+    List<QuickMessageItem> parseList(String key, List<QuickMessageItem> fallbackList) {
+      final raw = map[key];
+      if (raw is! List) return fallbackList;
+      return List.generate(fallbackList.length, (i) {
+        final item = i < raw.length ? raw[i] as Map<String, dynamic>? : null;
+        return QuickMessageItem.fromMap(item, fallbackList[i]);
+      });
+    }
+
+    return QuickMessagesConfig(
+      allButtons: parseList('allButtons', defaultConfig.allButtons),
+      questionButtons: parseList('questionButtons', defaultConfig.questionButtons),
+      answerButtons: parseList('answerButtons', defaultConfig.answerButtons),
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+        'allButtons': allButtons.map((e) => e.toMap()).toList(),
+        'questionButtons': questionButtons.map((e) => e.toMap()).toList(),
+        'answerButtons': answerButtons.map((e) => e.toMap()).toList(),
       };
 }
 

@@ -89,7 +89,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Esperando aprobacion del administrador...\nTe notificaremos cuando seas aceptado.',
+                        'Esperando aprobación del administrador...\nTe notificaremos cuando seas aceptado.',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.white.withOpacity(0.6)),
                       ),
@@ -129,7 +129,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                         textAlign: TextAlign.center,
                         style: const TextStyle(fontSize: 24, letterSpacing: 8, color: Colors.white),
                         decoration: InputDecoration(
-                          labelText: 'Codigo de 6 caracteres',
+                          labelText: 'Código de 6 caracteres',
                           labelStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                           counterText: '',
@@ -206,7 +206,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _requestJoin() async {
     final user = ref.read(currentUserProvider).valueOrNull;
     if (user == null || _codeCtrl.text.length != 6) {
-      setState(() => _error = 'Ingresa un codigo de 6 caracteres');
+      setState(() => _error = 'Ingresa un código de 6 caracteres');
       return;
     }
     setState(() {
@@ -220,7 +220,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             user.displayName,
           );
       if (!ok) {
-        setState(() => _error = 'Codigo no encontrado o ya sos miembro');
+        setState(() => _error = 'Código no encontrado o ya sos miembro');
       } else {
         setState(() {
           _error = null;
@@ -229,7 +229,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Solicitud enviada. Espera la aprobacion del administrador.'),
+              content: Text('Solicitud enviada. Espera la aprobación del administrador.'),
               duration: Duration(seconds: 3),
             ),
           );

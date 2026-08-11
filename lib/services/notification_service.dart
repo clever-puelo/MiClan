@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'location_config.dart';
 
 // ============================================================================
 // NOTIFICATION SERVICE - Notificaciones Locales
@@ -23,7 +24,7 @@ class NotificationService {
     await _local.initialize(
       initSettings,
       onDidReceiveNotificationResponse: (details) {
-        // Manejar tap en notificacion
+        // Manejar tap en notificación
       },
     );
 
@@ -39,7 +40,7 @@ class NotificationService {
       const AndroidNotificationChannel(
         'sos_channel',
         'S.O.S Emergencia',
-        description: 'Alertas de panico del grupo',
+        description: 'Alertas de pánico del grupo',
         importance: Importance.max,
         playSound: true,
         enableVibration: true,
@@ -66,6 +67,31 @@ class NotificationService {
         importance: Importance.high,
       ),
     );
+
+    // FIX 2026-08-10: canal para el foreground service de
+    // BackgroundLocationService (caja negra en segundo plano). Debe existir
+    // antes de arrancar ese servicio; se crea aca junto con el resto de
+    // canales, al inicio de la app.
+    //
+    // Importance.none (= NotificationManager.IMPORTANCE_NONE) a pedido del
+    // usuario: que Android solo muestre el icono en la barra de estado,
+    // sin sonido/vibración/heads-up cada vez que se actualiza. Es la misma
+    // tecnica que usa geolocator para su propio foreground service (ver
+    // BackgroundNotification.java del plugin geolocator_android): un
+    // foreground service SIEMPRE muestra su notificación (Android lo
+    // exige), pero con importancia "none" lo hace de forma silenciosa, sin
+    // interrumpir con un mensaje.
+    await androidPlugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        kGpsTrackingNotificationChannelId,
+        'Rastreo GPS',
+        description: 'Icono persistente mientras se graba la ubicación en segundo plano',
+        importance: Importance.none,
+        playSound: false,
+        enableVibration: false,
+        showBadge: false,
+      ),
+    );
   }
 
   static Future<void> showLocalNotification({
@@ -79,7 +105,7 @@ class NotificationService {
     final androidDetails = AndroidNotificationDetails(
       channelId,
       isSos ? 'S.O.S Emergencia' : 'Mensajes MiClan',
-      channelDescription: isSos ? 'Alertas de panico del grupo' : 'Mensajes del grupo',
+      channelDescription: isSos ? 'Alertas de pánico del grupo' : 'Mensajes del grupo',
       importance: isSos ? Importance.max : Importance.high,
       priority: isSos ? Priority.max : Priority.high,
       playSound: true,

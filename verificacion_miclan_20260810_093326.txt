@@ -1,0 +1,99 @@
+﻿
+==== 0. Ubicacion del proyecto ====
+[OK] pubspec.yaml encontrado y corresponde al proyecto 'miclan'.
+
+==== 1. Git ====
+[OK] Git instalado: usage: git [-v | --version] [-h | --help] [-C <path>] [-c <name>=<value>]
+
+==== 2. Flutter SDK ====
+[OK] Flutter encontrado en PATH: Manage your Flutter app development.
+--- flutter doctor -v ---
+[ÔêÜ] Flutter (Channel stable, 3.44.9, on Microsoft Windows [Versi┬ón 10.0.26200.8875], locale es-AR) [176ms]
+    ÔÇó Flutter version 3.44.9 on channel stable at C:\src\flutter
+    ÔÇó Upstream repository https://github.com/flutter/flutter.git
+    ÔÇó Framework revision 6b182d2c75 (5 days ago), 2026-08-05 10:04:07 -0700
+    ÔÇó Engine revision 5a2a6a42cc
+    ÔÇó Dart version 3.12.2
+    ÔÇó DevTools version 2.57.0
+    ÔÇó Feature flags: enable-web, enable-linux-desktop, enable-macos-desktop, enable-windows-desktop, enable-android, enable-ios, cli-animations, enable-native-assets, enable-swift-package-manager, omit-legacy-version-file, enable-lldb-debugging, enable-uiscene-migration
+
+[ÔêÜ] Windows Version (Windows 11 or higher, 25H2, 2009) [471ms]
+
+[!] Android toolchain - develop for Android devices (Android SDK version 37.0.0) [1.887ms]
+    ÔÇó Android SDK at C:\Users\clever\AppData\Local\Android\sdk
+    ÔÇó Emulator version 37.1.11.0 (build_id 15917651) (CL:N/A)
+    ÔÇó Platform android-37.1, build-tools 37.0.0
+    ÔÇó Java binary at: C:\Program Files\Android\Android Studio\jbr\bin\java
+      This is the JDK bundled with the latest Android Studio installation on this machine.
+      To manually set the JDK path, use: `flutter config --jdk-dir="path/to/jdk"`.
+    ÔÇó Java version OpenJDK Runtime Environment (build 25.0.2+-15348964-b329.117)
+    ! Some Android licenses not accepted. To resolve this, run: flutter doctor --android-licenses
+
+[ÔêÜ] Chrome - develop for the web [8ms]
+    ÔÇó Chrome at C:\Program Files\Google\Chrome\Application\chrome.exe
+
+[X] Visual Studio - develop Windows apps [7ms]
+    X Visual Studio not installed; this is necessary to develop Windows apps.
+      Download at https://visualstudio.microsoft.com/downloads/.
+      Please install the "Desktop development with C++" workload, including all of its default components
+
+[ÔêÜ] Connected device (2 available) [2,3s]
+    ÔÇó Windows (desktop) ÔÇó windows ÔÇó windows-x64    ÔÇó Microsoft Windows [Versi┬ón 10.0.26200.8875]
+    ÔÇó Chrome (web)      ÔÇó chrome  ÔÇó web-javascript ÔÇó Google Chrome 151.0.7922.109
+
+[ÔêÜ] Network resources [450ms]
+    ÔÇó All expected network resources are available.
+
+! Doctor found issues in 2 categories.
+
+[AVISO] Hay licencias del Android SDK sin aceptar.
+    -> Intentando aceptar licencias automaticamente (equivale a responder 'y' a cada una)...
+[ARREGLADO] Licencias del Android SDK aceptadas.
+[OK] (informativo) Toolchain de Windows detectado por flutter doctor - no hace falta para MiClan (solo Android).
+[AVISO] No parece haber ningun dispositivo/emulador Android detectado en este momento.
+    -> Conecta el telefono por USB con 'Depuracion USB' activada, o abri un emulador desde Android Studio (Device Manager), y despues corre: flutter devices
+
+==== 3. Editores y plugins ====
+[OK] VS Code encontrado en PATH.
+[OK] Extension 'Flutter' de VS Code instalada.
+[OK] Android Studio detectado en: C:\Program Files\Android\Android Studio
+
+==== 4. Node.js / npm ====
+[OK] Node.js instalado: v26.7.0
+[OK] npm instalado: npm <command>
+
+==== 5. Firebase CLI ====
+[OK] Firebase CLI instalada: Usage:  [options] [command]
+[AVISO] No hay ninguna cuenta logueada en Firebase CLI.
+    -> Corre: firebase login   (se abre el navegador para loguearte con la cuenta que tiene acceso al proyecto MiClan).
+
+==== 6. FlutterFire CLI ====
+[AVISO] FlutterFire CLI no esta en el PATH (o no esta instalada).
+    -> Instalando FlutterFire CLI (dart pub global activate flutterfire_cli)...
+[AVISO] Se instalo pero 'flutterfire' no se reconoce todavia como comando.
+    -> Agrega '%APPDATA%\Pub\Cache\bin' al PATH del sistema y reabri la terminal.
+
+==== 7. Configuracion de Firebase del proyecto ====
+[OK] google-services.json encontrado en android\app\
+[OK] JSON valido. project_id='miclan-6dd12', package_name='com.agiletask.miclan'.
+[OK] .firebaserc encontrado, proyecto por defecto: 'miclan-6dd12'.
+[OK] lib\firebase_options.dart encontrado, projectId (Android) = 'miclan-6dd12'.
+[OK] applicationId en Gradle: 'com.agiletask.miclan'.
+[OK] Todos los identificadores de Firebase (project_id, package_name) coinciden entre google-services.json, .firebaserc, firebase_options.dart y Gradle.
+
+==== 8. Dependencias Flutter (pubspec) ====
+[OK] Dependencias de Flutter ya resueltas (.dart_tool y pubspec.lock presentes).
+    -> Corriendo 'flutter pub get' de todas formas, para asegurar que esten al dia...
+[ARREGLADO] flutter pub get ejecutado.
+
+==== 9. Cloud Functions ====
+[OK] Carpeta de Cloud Functions encontrada.
+[AVISO] Tu Node.js es v26.7.0 pero las Cloud Functions piden Node 20 puntual.
+    -> No es bloqueante para desarrollar/deployar (Firebase usa el runtime de Node 20 en la nube igual), pero si queres emular localmente sin sorpresas: instala nvm-windows (https://github.com/coreybutler/nvm-windows) y corre 'nvm install 20' + 'nvm use 20' solo quedandote en esa carpeta.
+[AVISO] Faltan las dependencias de Cloud Functions (node_modules no existe).
+    -> Corriendo 'npm install' dentro de miclan-functions\functions...
+[ARREGLADO] Dependencias de Cloud Functions instaladas.
+
+==== 10. Reglas e indices de Firestore ====
+[OK] firestore.rules encontrado localmente.
+[OK] firestore.indexes.json encontrado localmente.

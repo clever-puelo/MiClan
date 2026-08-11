@@ -53,9 +53,13 @@ class DatabaseHelper {
     }
   }
 
-  Future<void> insertLocation(String? groupId, double lat, double lng) async {
+  /// Inserta un punto en la caja negra local. Devuelve el id de la fila
+  /// insertada (usado por LocationService para marcarla como sincronizada
+  /// apenas se confirma la escritura en Firestore, sin esperar al barrido
+  /// de `getUnsyncedLocations`, y asi evitar registrarla dos veces).
+  Future<int> insertLocation(String? groupId, double lat, double lng) async {
     final db = await database;
-    await db.insert('locations', {
+    final id = await db.insert('locations', {
       'groupId': groupId,
       'lat': lat,
       'lng': lng,
@@ -63,6 +67,7 @@ class DatabaseHelper {
       'synced': 0,
     });
     await _rotateLocations(groupId);
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> getUnsyncedLocations() async {
@@ -80,7 +85,7 @@ class DatabaseHelper {
     return await db.query('locations', orderBy: 'timestamp DESC');
   }
 
-  /// NUEVO: Obtener ubicaciones de los ultimos N dias (local).
+  /// NUEVO: Obtener ubicaciones de los últimos N días (local).
   Future<List<Map<String, dynamic>>> getLocationsLastDays(int days) async {
     final db = await database;
     final since = DateTime.now().subtract(Duration(days: days)).toIso8601String();

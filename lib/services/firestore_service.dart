@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
 import '../models/app_models.dart';
+import 'stream_retry.dart';
 
 class FirestoreService {
   final _db = FirebaseFirestore.instance;
@@ -123,20 +124,26 @@ class FirestoreService {
     await _db.collection('groups').doc(groupId).delete();
   }
 
+  // FIX 2026-08-10: envueltos en selfHealingStream. Son los dos streams
+  // que, junto con currentUserStream, alimentan la pantalla principal; si
+  // pegan un "permission-denied" transitorio (arranque en frio justo
+  // despues de otorgar el permiso de GPS, con el token todavia
+  // propagando), se reintentan solos cada 2s en vez de dejar la pantalla
+  // pegada en el error esperando que el usuario presione "Reintentar".
   Stream<AppGroup?> getGroupStream(String groupId) {
-    return _db
+    return selfHealingStream(() => _db
         .collection('groups')
         .doc(groupId)
         .snapshots()
-        .map((doc) => doc.exists ? AppGroup.fromMap(doc.data()!, doc.id) : null);
+        .map((doc) => doc.exists ? AppGroup.fromMap(doc.data()!, doc.id) : null));
   }
 
   Stream<List<AppUser>> getGroupMembersStream(String groupId) {
-    return _db
+    return selfHealingStream(() => _db
         .collection('users')
         .where('groupId', isEqualTo: groupId)
         .snapshots()
-        .map((snap) => snap.docs.map((d) => AppUser.fromMap(d.data(), d.id)).toList());
+        .map((snap) => snap.docs.map((d) => AppUser.fromMap(d.data(), d.id)).toList()));
   }
 
   Stream<List<PendingRequest>> getPendingRequestsStream(String groupId) {
@@ -157,12 +164,20 @@ class FirestoreService {
     ).join();
   }
 
+  /// Sube la posicion actual (para el mapa en tiempo real) y, salvo que se
+  /// indique lo contrario, agrega un punto al historial ("caja negra").
+  ///
+  /// FIX: `recordHistory` permite que quien llama (LocationService) decida
+  /// no grabar un nuevo punto de historial cuando la ubicacion es identica
+  /// a la ultima registrada, evitando llenar la caja negra de puntos
+  /// duplicados mientras el usuario esta quieto.
   Future<void> updateLocation(
     String uid,
     String groupId,
     double lat,
-    double lng,
-  ) async {
+    double lng, {
+    bool recordHistory = true,
+  }) async {
     final now = DateTime.now();
     final data = {
       'groupId': groupId,
@@ -172,17 +187,31 @@ class FirestoreService {
       'updatedAt': now.toIso8601String(),
     };
 
-    // Ubicacion actual (para el mapa en tiempo real)
+    // Ubicación actual (para el mapa en tiempo real)
     await _db.collection('locations').doc(uid).set(data, SetOptions(merge: true));
 
-    // NUEVO: Guardar en historial para la caja negra del admin
-    await _db.collection('locations').doc(uid).collection('history').add({
+    if (recordHistory) {
+      // Guardar en historial para la caja negra del admin
+      await _db.collection('locations').doc(uid).collection('history').add({
+        'groupId': groupId,
+        'lat': lat,
+        'lng': lng,
+        'timestamp': FieldValue.serverTimestamp(),
+        'recordedAt': now.toIso8601String(),
+      });
+    }
+  }
+
+  /// "Latido" liviano: solo refresca el timestamp de la ubicacion actual
+  /// (para que el resto del grupo sepa que el usuario sigue conectado / en
+  /// el mismo lugar) sin crear un nuevo punto en el historial. Se usa en la
+  /// sincronizacion forzada cada 30s cuando la posicion no cambio.
+  Future<void> touchLocation(String uid, String groupId) async {
+    await _db.collection('locations').doc(uid).set({
       'groupId': groupId,
-      'lat': lat,
-      'lng': lng,
       'timestamp': FieldValue.serverTimestamp(),
-      'recordedAt': now.toIso8601String(),
-    });
+      'updatedAt': DateTime.now().toIso8601String(),
+    }, SetOptions(merge: true));
   }
 
   Stream<LatLng?> getLocationStream(String uid) {
@@ -210,6 +239,52 @@ class FirestoreService {
           data['docId'] = d.id;
           return data;
         }).toList());
+  }
+
+  /// NUEVO: historial de un miembro acotado a un rango [desde, hasta], para
+  /// los sliders de muestreo de la ventana de recorrido.
+  Stream<List<Map<String, dynamic>>> getLocationHistoryRangeStream(
+    String uid,
+    DateTime desde,
+    DateTime hasta, {
+    bool descending = false,
+  }) {
+    return _db
+        .collection('locations')
+        .doc(uid)
+        .collection('history')
+        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(desde))
+        .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(hasta))
+        .orderBy('timestamp', descending: descending)
+        .snapshots()
+        .map((snap) => snap.docs.map((d) {
+          final data = d.data();
+          data['docId'] = d.id;
+          return data;
+        }).toList());
+  }
+
+  // ==========================================================================
+  // MENSAJES RAPIDOS CONFIGURABLES (admin)
+  // ==========================================================================
+
+  Future<void> saveQuickMessages(String groupId, QuickMessagesConfig config) async {
+    await _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('config')
+        .doc('quickMessages')
+        .set({...config.toMap(), 'updatedAt': FieldValue.serverTimestamp()});
+  }
+
+  Stream<QuickMessagesConfig> getQuickMessagesStream(String groupId) {
+    return _db
+        .collection('groups')
+        .doc(groupId)
+        .collection('config')
+        .doc('quickMessages')
+        .snapshots()
+        .map((doc) => QuickMessagesConfig.fromMap(doc.data()));
   }
 
   Future<String> sendAlert(

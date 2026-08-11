@@ -9,8 +9,8 @@ admin.initializeApp();
 // ============================================================================
 // FIX 2026-08-07: Eliminado el campo 'notification' del payload FCM.
 // Ahora solo se envia 'data'. Esto evita duplicados porque FCM nativo
-// NO muestra notificacion automatica. La app (background/foreground)
-// es la unica responsable de mostrar la notificacion local.
+// NO muestra notificación automática. La app (background/foreground)
+// es la unica responsable de mostrar la notificación local.
 // title y body van dentro de data para que la app los lea.
 // ============================================================================
 
@@ -77,17 +77,17 @@ exports.sendAlertNotification = functions.firestore.document('alerts/{alertId}')
   switch (type) {
     case 'SOS':
       title = 'S.O.S - MiClan';
-      body = 'ALERTA DE PANICO ACTIVADA!';
+      body = 'ALERTA DE PÁNICO ACTIVADA!';
       channelId = 'sos_channel';
       break;
     case 'photo':
       title = `MiClan - ${displayName}`;
-      body = 'Te envio una foto';
+      body = 'Te envié una foto';
       channelId = 'msg_channel';
       break;
     case 'audio':
       title = `MiClan - ${displayName}`;
-      body = 'Te envio un audio';
+      body = 'Te envié un audio';
       channelId = 'msg_channel';
       break;
     case 'command_message':

@@ -92,7 +92,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   data: (alerts) {
                     if (alerts.isEmpty) {
                       return const Center(
-                        child: Text('No hay mensajes aun', style: TextStyle(color: Colors.white38)),
+                        child: Text('No hay mensajes aún', style: TextStyle(color: Colors.white38)),
                       );
                     }
                     return ListView.builder(

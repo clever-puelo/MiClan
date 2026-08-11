@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/app_providers.dart';
+import '../widgets/app_footer.dart';
 
 class AuthScreen extends ConsumerStatefulWidget {
   const AuthScreen({super.key});
@@ -24,12 +25,15 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF273758),
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(28),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
+        child: Column(
+          children: [
+            Expanded(
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
                 SizedBox(
                   width: 100,
                   height: 100,
@@ -84,7 +88,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                 const SizedBox(height: 8),
                 Text(
                   _isLogin
-                      ? 'Ingresa tu email y contrasena'
+                      ? 'Ingresa tu email y contraseña'
                       : 'Completa tus datos',
                   style: TextStyle(
                     fontSize: 14,
@@ -128,7 +132,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                       const SizedBox(height: 16),
                       _buildField(
                         controller: _passCtrl,
-                        label: 'Contrasena (6 digitos)',
+                        label: 'Contraseña (6 digitos)',
                         icon: Icons.lock,
                         keyboard: TextInputType.number,
                         obscure: true,
@@ -139,7 +143,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                         const SizedBox(height: 16),
                         _buildField(
                           controller: _passConfirmCtrl,
-                          label: 'Repetir contrasena',
+                          label: 'Repetir contraseña',
                           icon: Icons.lock_outline,
                           keyboard: TextInputType.number,
                           obscure: true,
@@ -201,14 +205,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                   }),
                   child: Text(
                     _isLogin
-                        ? 'No tenes cuenta? Registrate'
-                        : 'Ya tenes cuenta? Entra',
+                        ? '¿No tenés cuenta? Registrate'
+                        : '¿Ya tenés cuenta? Entrá',
                     style: TextStyle(color: Colors.blue.shade300),
                   ),
                 ),
               ],
             ),
-          ),
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: AppCopyrightFooter(),
+            ),
+          ],
         ),
       ),
     );
@@ -263,7 +274,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     final pass = _passCtrl.text.trim();
 
     if (email.isEmpty || pass.length != 6) {
-      setState(() => _error = 'Ingresa email y contrasena de 6 digitos');
+      setState(() => _error = 'Ingresa email y contraseña de 6 digitos');
       return;
     }
 
@@ -274,7 +285,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         return;
       }
       if (pass != _passConfirmCtrl.text.trim()) {
-        setState(() => _error = 'Las contrasenas no coinciden');
+        setState(() => _error = 'Las contraseñas no coinciden');
         return;
       }
     }
@@ -297,7 +308,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'Cuenta creada. Ahora inicia sesion con tu email y contrasena.',
+                'Cuenta creada. Ahora inicia sesión con tu email y contraseña.',
               ),
               duration: Duration(seconds: 4),
             ),

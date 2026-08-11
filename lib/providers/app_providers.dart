@@ -59,3 +59,12 @@ final geofenceZoneProvider = StreamProvider<GeofenceZone?>((ref) {
   if (group == null) return Stream.value(null);
   return ref.watch(firestoreServiceProvider).getGeofenceStream(group.id);
 });
+
+// Mensajes rapidos configurables por el admin del grupo. Los miembros los
+// leen cuando la app esta en primer plano (StreamProvider se mantiene vivo
+// mientras haya alguna pantalla escuchandolo).
+final groupQuickMessagesProvider = StreamProvider<QuickMessagesConfig>((ref) {
+  final group = ref.watch(currentGroupProvider).valueOrNull;
+  if (group == null) return Stream.value(QuickMessagesConfig.defaultConfig);
+  return ref.watch(firestoreServiceProvider).getQuickMessagesStream(group.id);
+});

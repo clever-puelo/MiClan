@@ -29,7 +29,6 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize"
-            android:showOnLockScreen="true"
             android:turnScreenOn="true"
             android:showWhenLocked="true">
 
@@ -48,20 +47,24 @@
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="msg_channel" />
 
-        <!-- FCM Service -->
-        <service
-            android:name="com.google.firebase.messaging.FirebaseMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
+        <!-- NOTA: NO se declara aqui un <service> para FCM. El plugin
+             firebase_messaging ya registra su propio FirebaseMessagingService
+             en su AndroidManifest.xml (se fusiona automaticamente al build).
+             Declararlo de nuevo produce un conflicto de merge y notificaciones
+             duplicadas. -->
 
-        <!-- Background GPS Service -->
+        <!-- Background GPS Service: graba la caja negra con la app en
+             segundo plano o el telefono dormido (ver
+             background_location_service.dart / home_screen.dart). El
+             tracking en primer plano lo sigue manejando geolocator con su
+             propio foreground service (ver location_service.dart).
+             stopWithTask=false: sin esto Android mataria este servicio al
+             deslizar la app fuera de "Recientes". -->
         <service
             android:name="id.flutter.flutter_background_service.BackgroundService"
             android:foregroundServiceType="location"
             android:exported="true"
+            android:stopWithTask="false"
             android:permission="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
         <meta-data
