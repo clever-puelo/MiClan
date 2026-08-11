@@ -77,3 +77,12 @@ final groupDeviceStatusProvider = StreamProvider<List<DeviceStatus>>((ref) {
   if (group == null) return Stream.value([]);
   return ref.watch(firestoreServiceProvider).getGroupDeviceStatusStream(group.id);
 });
+
+// Fecha de la ultima ubicacion GPS realmente registrada por cada miembro
+// (uid -> DateTime?), separado del "latido" de arriba -- ver comentario en
+// FirestoreService.getGroupLastLocationStream.
+final groupLastLocationProvider = StreamProvider<Map<String, DateTime?>>((ref) {
+  final group = ref.watch(currentGroupProvider).valueOrNull;
+  if (group == null) return Stream.value({});
+  return ref.watch(firestoreServiceProvider).getGroupLastLocationStream(group.id);
+});

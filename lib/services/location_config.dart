@@ -51,10 +51,41 @@ const double kSameLocationThresholdMeters = 20.0;
 const Duration kNormalTrackingInterval = Duration(minutes: 1);
 const Duration kBatterySaverTrackingInterval = Duration(minutes: 5);
 
+const String _kPrefBatterySaver = 'battery_saver';
+
+// FIX 2026-08-11: se detecto que "Modo ahorro" quedaba SIN NINGUN efecto en
+// el intervalo real de grabacion. Causa: `SharedPreferencesAsync` en
+// Android usa por defecto el backend "DataStore" (Jetpack DataStore
+// Preferences) -- un almacenamiento DISTINTO al archivo clasico que usa
+// `SharedPreferences.getInstance()` (el legacy `SharedPreferencesPlugin`).
+// `settings_screen.dart` escribia el switch con `SharedPreferences.
+// getInstance()` (archivo clasico), pero `getTrackingInterval()` de este
+// archivo leia con `SharedPreferencesAsync` (DataStore) -- dos storages
+// completamente separados que nunca se cruzaban. El toggle se veia
+// correcto en la propia pantalla de Configuracion (que leia y escribia
+// siempre del mismo storage clasico, autoconsistente), pero el intervalo
+// real usado por el timer de sync (primer plano) y por el tick loop del
+// servicio de background quedaba SIEMPRE en 1 minuto, sin importar lo que
+// el usuario configurara.
+//
+// Fix: centralizar el flag "battery_saver" aca, con getters/setters
+// publicos que SIEMPRE usan la misma instancia de `SharedPreferencesAsync`
+// (`_prefs`, ya usada para el resto de este archivo). `settings_screen.dart`
+// y `location_service.dart` deben llamar a estas funciones, NUNCA leer o
+// escribir 'battery_saver' directo con `SharedPreferences`/
+// `SharedPreferencesAsync` por su cuenta -- asi no puede volver a divergir.
+Future<bool> isBatterySaverEnabled() async {
+  return await _prefs.getBool(_kPrefBatterySaver) ?? false;
+}
+
+Future<void> setBatterySaverEnabled(bool enabled) async {
+  await _prefs.setBool(_kPrefBatterySaver, enabled);
+}
+
 /// Intervalo de grabación configurado por el usuario (Ajustes > Batería >
 /// "Modo ahorro"): 1 minuto normalmente, 5 minutos en modo ahorro.
 Future<Duration> getTrackingInterval() async {
-  final batterySaver = await _prefs.getBool('battery_saver') ?? false;
+  final batterySaver = await isBatterySaverEnabled();
   return batterySaver ? kBatterySaverTrackingInterval : kNormalTrackingInterval;
 }
 

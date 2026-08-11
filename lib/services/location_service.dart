@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'battery_optimization_service.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
@@ -237,8 +236,13 @@ class LocationService {
 
   Future<void> _handlePosition(String uid, String groupId, Position position) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final batterySaver = prefs.getBool('battery_saver') ?? false;
+      // FIX 2026-08-11: antes leia 'battery_saver' con SharedPreferences
+      // clasico (SharedPreferences.getInstance()), un storage distinto al
+      // que usa isBatterySaverEnabled() (SharedPreferencesAsync, ver
+      // location_config.dart) -- desde que Configuracion escribe el switch
+      // por ese mismo canal, leerlo aca con el clasico quedaria siempre
+      // desactualizado (el mismo bug, al reves). Unificado a un solo canal.
+      final batterySaver = await isBatterySaverEnabled();
       final minDistance = batterySaver ? 200.0 : 50.0;
 
       bool shouldUpload = false;

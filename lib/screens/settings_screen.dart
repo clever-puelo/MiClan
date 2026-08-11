@@ -8,7 +8,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
+import '../services/battery_optimization_service.dart';
 import '../services/firestore_service.dart';
+import '../services/location_config.dart';
 import '../widgets/app_footer.dart';
 import '../main.dart';
 
@@ -18,21 +20,54 @@ class SettingsScreen extends ConsumerStatefulWidget {
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen> with WidgetsBindingObserver {
   bool _batterySaver = false;
+  // null = todavia no se chequeo. Se muestra en vivo al lado del boton
+  // "Desactivar optimización de batería" para poder confirmar si realmente
+  // quedo excluida despues de tocarlo (antes no habia forma de verlo sin
+  // salir a Ajustes del sistema).
+  bool? _batteryOptIgnored;
   final _serverKeyCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadPrefs();
+    _checkBatteryOptimization();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // El AndroidIntent de _openBatterySettings() no devuelve un resultado (es
+  // "fire and forget"): la unica forma de saber si el usuario realmente
+  // acepto el dialogo del sistema es volver a preguntarle al SO cuando la
+  // app vuelve a primer plano (mismo patron que usa HomeScreen para el
+  // mismo permiso).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkBatteryOptimization();
+  }
+
+  Future<void> _checkBatteryOptimization() async {
+    final ignored = await BatteryOptimizationService.isIgnoring();
+    if (mounted) setState(() => _batteryOptIgnored = ignored);
   }
 
   Future<void> _loadPrefs() async {
+    // FIX 2026-08-11: 'battery_saver' se lee via location_config.dart
+    // (SharedPreferencesAsync), NO con SharedPreferences.getInstance() acá
+    // -- ver el comentario largo en location_config.dart. Usar el clásico
+    // acá de nuevo reintroduciría el bug de "Modo ahorro no hace nada".
+    final batterySaver = await isBatterySaverEnabled();
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        _batterySaver = prefs.getBool('battery_saver') ?? false;
+        _batterySaver = batterySaver;
         _serverKeyCtrl.text = prefs.getString('fcm_server_key') ?? '';
       });
     }
@@ -148,16 +183,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             value: _batterySaver,
             activeColor: Colors.blue,
             onChanged: (val) async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setBool('battery_saver', val);
+              await setBatterySaverEnabled(val);
               setState(() => _batterySaver = val);
             },
           ),
           _actionTile(
-            icon: Icons.battery_alert,
+            icon: _batteryOptIgnored == true ? Icons.battery_charging_full : Icons.battery_alert,
+            color: _batteryOptIgnored == true ? Colors.greenAccent.shade400 : null,
             text: 'Desactivar optimizacion de batería',
-            subtitle: 'Evita que Android cierre la app en segundo plano',
-            onTap: _openBatterySettings,
+            subtitle: _batteryOptIgnored == null
+                ? 'Evita que Android cierre la app en segundo plano'
+                : _batteryOptIgnored == true
+                    ? 'Ya excluida ✓ (esto solo cubre Android estándar; en Xiaomi/Huawei/Samsung puede hacer falta también habilitar "inicio automático" en Ajustes de esa marca)'
+                    : 'ACTIVA — Android puede matar el GPS en segundo plano. Tocá para excluir la app.',
+            onTap: () async {
+              _openBatterySettings();
+              // El dialogo del sistema puede resolverse sin que la app
+              // llegue a pasar por paused/resumed (a veces es un dialogo
+              // superpuesto, no un cambio real de Activity) -- se
+              // rechequea aca tambien, ademas del recheck en
+              // didChangeAppLifecycleState.
+              await Future.delayed(const Duration(milliseconds: 800));
+              _checkBatteryOptimization();
+            },
           ),
           _divider(),
           _sectionTitle('Caja Negra Local'),
@@ -1341,6 +1389,7 @@ class _MemberStatusDialog extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final membersAsync = ref.watch(groupMembersProvider);
     final statusAsync = ref.watch(groupDeviceStatusProvider);
+    final lastLocationAsync = ref.watch(groupLastLocationProvider);
 
     return Dialog(
       backgroundColor: const Color(0xFF273758),
@@ -1380,6 +1429,7 @@ class _MemberStatusDialog extends ConsumerWidget {
                 data: (members) {
                   final all = [adminUser, ...members.where((m) => m.uid != adminUser.uid)];
                   final statuses = statusAsync.valueOrNull ?? [];
+                  final lastLocations = lastLocationAsync.valueOrNull ?? {};
                   return ListView.builder(
                     shrinkWrap: true,
                     itemCount: all.length,
@@ -1392,7 +1442,7 @@ class _MemberStatusDialog extends ConsumerWidget {
                           break;
                         }
                       }
-                      return _memberStatusCard(member, status, member.uid == adminUser.uid);
+                      return _memberStatusCard(member, status, lastLocations[member.uid], member.uid == adminUser.uid);
                     },
                   );
                 },
@@ -1406,29 +1456,44 @@ class _MemberStatusDialog extends ConsumerWidget {
     );
   }
 
-  Widget _memberStatusCard(AppUser member, DeviceStatus? status, bool isSelf) {
+  Widget _memberStatusCard(AppUser member, DeviceStatus? status, DateTime? lastLocationAt, bool isSelf) {
     final now = DateTime.now();
-    final updatedAt = status?.updatedAt;
-    final age = updatedAt != null ? now.difference(updatedAt) : null;
+    final heartbeatAt = status?.updatedAt;
+    final heartbeatAge = heartbeatAt != null ? now.difference(heartbeatAt) : null;
+    final locationAge = lastLocationAt != null ? now.difference(lastLocationAt) : null;
     // Umbral de "reciente": el intervalo configurado (1 o 5 min) x 3, con
     // piso de 6 min, para no marcar "desconectado" por una demora normal
     // de un ciclo (ej. sin señal momentánea).
     final expectedMinutes = status?.trackingIntervalMinutes ?? 1;
     final staleThresholdMin = (expectedMinutes * 3).clamp(6, 30);
-    final isStale = age == null || age.inMinutes > staleThresholdMin;
+    final heartbeatStale = heartbeatAge == null || heartbeatAge.inMinutes > staleThresholdMin;
+    final locationStale = locationAge == null || locationAge.inMinutes > staleThresholdMin;
 
     late final String estadoLabel;
     late final Color estadoColor;
     late final IconData estadoIcon;
-    if (status == null) {
+    if (status == null && lastLocationAt == null) {
       estadoLabel = 'Sin datos (nunca reportó)';
       estadoColor = Colors.white38;
       estadoIcon = Icons.help_outline;
-    } else if (isStale) {
+    } else if (heartbeatStale) {
+      // El servicio/app no manda ni siquiera el "latido" hace rato: lo mas
+      // probable es que el proceso este muerto (matado por el sistema,
+      // permiso de ubicacion revocado del todo, o la app desinstalada).
       estadoLabel = 'Desconectado / sin señal reciente';
       estadoColor = Colors.redAccent;
       estadoIcon = Icons.cloud_off;
-    } else if (status.appState == 'foreground') {
+    } else if (locationStale) {
+      // FIX 2026-08-11: el "latido" (deviceStatus) se reporta ANTES de
+      // intentar leer el GPS a proposito, para poder distinguir "el
+      // proceso murio" de "el proceso vive pero el GPS no responde". Este
+      // caso es justamente ese segundo escenario -- el que puede pasar
+      // desapercibido si solo se mira el latido, y es probablemente el
+      // caso real que motivo este panel (miembro sin movimiento en horas).
+      estadoLabel = 'Servicio activo, SIN ubicación GPS reciente';
+      estadoColor = Colors.orangeAccent;
+      estadoIcon = Icons.location_off;
+    } else if (status!.appState == 'foreground') {
       estadoLabel = 'App activa (primer plano)';
       estadoColor = Colors.greenAccent.shade400;
       estadoIcon = Icons.smartphone;
@@ -1463,8 +1528,16 @@ class _MemberStatusDialog extends ConsumerWidget {
           ),
           const SizedBox(height: 4),
           Text(estadoLabel, style: TextStyle(color: estadoColor, fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          // Ubicación GPS real primero: es el dato que más le importa al
+          // admin, y el que puede diferir del "latido" (ver arriba).
+          _statusRow(
+            'Última ubicación GPS',
+            _agoText(locationAge),
+            ok: !locationStale,
+          ),
           if (status != null) ...[
-            const SizedBox(height: 8),
+            _statusRow('Latido del servicio', _agoText(heartbeatAge)),
             _statusRow('Modo ahorro', status.batterySaver ? 'Sí (cada 5 min)' : 'No (cada 1 min)'),
             _statusRow(
               'Permiso ubicación 2do plano',
@@ -1476,7 +1549,6 @@ class _MemberStatusDialog extends ConsumerWidget {
               status.batteryOptimizationIgnored ? 'Ignorada (bien)' : 'Activa (puede matar el GPS)',
               ok: status.batteryOptimizationIgnored,
             ),
-            _statusRow('Última actualización', _agoText(age)),
           ],
         ],
       ),

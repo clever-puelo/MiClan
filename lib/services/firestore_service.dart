@@ -303,6 +303,31 @@ class FirestoreService {
         .map((snap) => snap.docs.map((d) => DeviceStatus.fromMap(d.data(), d.id)).toList()));
   }
 
+  /// Fecha de la ULTIMA ubicacion efectivamente registrada por cada
+  /// miembro (`locations/{uid}.timestamp`), aparte del "latido" de
+  /// `deviceStatus`. Se usa junto a `getGroupDeviceStatusStream` en el
+  /// panel de Estado de Miembros: `deviceStatus` solo confirma que el
+  /// servicio/isolate sigue vivo y "tickeando" (se reporta ANTES de
+  /// intentar leer el GPS, para no depender de que el GPS funcione), pero
+  /// eso puede seguir fresco aunque el GPS puntual falle en silencio
+  /// (permiso revocado a medias, hardware sin fix, etc.) -- este stream
+  /// distingue "el proceso esta vivo" de "el proceso esta vivo Y el GPS
+  /// realmente esta produciendo ubicaciones".
+  Stream<Map<String, DateTime?>> getGroupLastLocationStream(String groupId) {
+    return selfHealingStream(() => _db
+        .collection('locations')
+        .where('groupId', isEqualTo: groupId)
+        .snapshots()
+        .map((snap) {
+          final map = <String, DateTime?>{};
+          for (final d in snap.docs) {
+            final ts = d.data()['timestamp'] as Timestamp?;
+            map[d.id] = ts?.toDate();
+          }
+          return map;
+        }));
+  }
+
   // ==========================================================================
   // MENSAJES RAPIDOS CONFIGURABLES (admin)
   // ==========================================================================
